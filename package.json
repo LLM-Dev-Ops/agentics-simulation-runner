@@ -1,0 +1,54 @@
+{
+  "name": "agentics-simulation-runner",
+  "version": "1.0.0",
+  "description": "Deterministic execution engine for the Agentics ecosystem - executes SimulationPlan artifacts and produces immutable SimulationResult artifacts",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest",
+    "test:coverage": "vitest --coverage",
+    "lint": "eslint src --ext .ts",
+    "lint:fix": "eslint src --ext .ts --fix",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist",
+    "prebuild": "npm run clean"
+  },
+  "keywords": [
+    "agentics",
+    "simulation",
+    "runner",
+    "deterministic",
+    "execution-engine",
+    "llm",
+    "agent"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "claude-flow": "^2.7.47",
+    "crypto-js": "^4.2.0",
+    "merkletreejs": "^0.4.0",
+    "pg": "^8.13.1",
+    "seedrandom": "^3.0.5",
+    "uuid": "^11.0.3",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/crypto-js": "^4.2.2",
+    "@types/node": "^22.19.3",
+    "@types/pg": "^8.11.10",
+    "@types/seedrandom": "^3.0.8",
+    "@types/uuid": "^10.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.19.1",
+    "@typescript-eslint/parser": "^8.19.1",
+    "eslint": "^9.17.0",
+    "typescript": "^5.9.3",
+    "vitest": "^2.1.8"
+  }
+}
