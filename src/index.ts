@@ -199,6 +199,63 @@ export type {
 } from './state/state-repository.js';
 
 // ============================================================================
+// Engine Module (Integration with agentics-simulation-engine)
+// ============================================================================
+
+export {
+  // Simulation Engine Invoker
+  SimulationEngineInvoker,
+  createSimulationEngineInvoker,
+  EngineConnectionError,
+  EngineInvocationError,
+  EngineTimeoutError,
+  DEFAULT_ENGINE_CONFIG,
+  // Structured Result Emitter
+  StructuredResultEmitter,
+  createStructuredResultEmitter,
+  emitResult,
+  formatResultForExport,
+  formatResultForROIEngine,
+} from './engine/index.js';
+
+export type {
+  // Engine Connection Types
+  EngineConnectionConfig,
+  EngineTimeline,
+  EngineTimelineEventType,
+  EngineArtifact,
+  EngineArtifactType,
+  EngineHealthStatus,
+  EngineComponentHealth,
+  EngineResourceStatus,
+  InvokerExecutionResult,
+  EngineStepResult,
+  EngineExecutionError,
+  EngineReproducibilityData,
+  // Emitter Types
+  ExportFormat,
+  EngineExecutionResult,
+  EmittedResult,
+  EmittedResultMetadata,
+  TimelineEvent,
+  TimelineEventType,
+  ExecutionSummaryData,
+  AgentExecutionData,
+  IntegrationExecutionData,
+  ArtifactReference,
+  DeterminismData,
+  StateHashEntry,
+  ExportableResult,
+  ExportMetadata,
+  ROIEngineInput,
+  ROIExecutionMetrics,
+  ROIAgentMetrics,
+  ROIIntegrationMetrics,
+  ROITimelineEntry,
+  ROIValidationSummary,
+} from './engine/index.js';
+
+// ============================================================================
 // Version Information
 // ============================================================================
 

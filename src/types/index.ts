@@ -228,3 +228,76 @@ export type {
 // - import { ... } from './types/plan.js'
 // - import { ... } from './types/result.js'
 // - import { ... } from './types/execution.js'
+
+// =============================================================================
+// Engine Integration Types
+// =============================================================================
+
+export type {
+  // Engine configuration
+  EngineTransport,
+  EngineConnectionMode,
+  EngineTLSConfig,
+  EnginePoolConfig,
+  SimulationEngineConfig,
+
+  // Engine invocation
+  EngineExecutionMode,
+  EngineStreamingConfig,
+  EngineCheckpointConfig,
+  EngineInvocationRequest,
+
+  // Timeline types
+  TimelineEntryType,
+  EngineTimelineEntry,
+  TimelineEntryData,
+  ExecutionStartData,
+  ExecutionEndData,
+  StepStartData,
+  StepEndData,
+  AgentInvokeData,
+  AgentResponseData,
+  LLMRequestData,
+  LLMResponseData,
+  StateReadData,
+  StateWriteData,
+  IntegrationCallData,
+  IntegrationResponseData,
+  CheckpointData,
+  ErrorData,
+  WarningData,
+  CustomData,
+  EngineTimeline,
+
+  // Artifact types
+  EngineArtifactType,
+  ArtifactStorageType,
+  ArtifactEncoding,
+  ArtifactStorageLocation,
+  EngineArtifact,
+
+  // Execution result types
+  DeterministicOutputs,
+  EngineMetrics,
+  EngineExecutionResult,
+
+  // Adapter and callback types
+  TimelineStreamCallback,
+  LogStreamCallback,
+  ExecutionProgress,
+  ProgressCallback,
+  EngineAdapter,
+
+  // Conversion types
+  ResultConversionOptions,
+  EngineResultConverter,
+} from './engine-types.js';
+
+// Type guards from engine-types
+export {
+  isEngineExecutionResult,
+  isErrorTimelineEntry,
+  isStepTimelineEntry,
+  isCheckpointArtifact,
+  isDeterministicResult,
+} from './engine-types.js';

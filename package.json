@@ -33,9 +33,12 @@
   "dependencies": {
     "claude-flow": "^2.7.47",
     "crypto-js": "^4.2.0",
+    "force": "^0.0.3",
+    "init": "^0.1.2",
     "merkletreejs": "^0.4.0",
     "pg": "^8.13.1",
     "seedrandom": "^3.0.5",
+    "swarm": "^0.3.25",
     "uuid": "^11.0.3",
     "zod": "^3.24.1"
   },

@@ -32,6 +32,21 @@ import { createHash } from 'crypto';
 
 import type { SimulationPlan } from '../types/simulation-plan.js';
 import type { SimulationResult } from '../types/simulation-result.js';
+import {
+  SimulationEngineInvoker,
+  createSimulationEngineInvoker,
+  type EngineConnectionConfig,
+  type InvokerExecutionResult,
+  type EngineHealthStatus,
+} from '../engine/simulation-engine-invoker.js';
+import {
+  StructuredResultEmitter,
+  createStructuredResultEmitter,
+  type EmittedResult,
+  type ROIEngineInput,
+  type ExportFormat,
+  type ExportableResult,
+} from '../engine/structured-result-emitter.js';
 import type {
   UUID,
   SHA256Hash,
@@ -258,6 +273,43 @@ export interface ComponentHealth {
 // ============================================================================
 
 /**
+ * Options for engine-based execution
+ */
+export interface EngineExecutionOptions {
+  /** Deterministic seed for reproducible execution */
+  readonly seed?: number;
+
+  /** Engine connection configuration override */
+  readonly engineConfig?: Partial<EngineConnectionConfig>;
+
+  /** Export format for the result */
+  readonly exportFormat?: ExportFormat;
+
+  /** Whether to format result for ROI engine consumption */
+  readonly formatForROIEngine?: boolean;
+}
+
+/**
+ * Result of engine-based execution
+ */
+export interface EngineExecutionCompleteResult {
+  /** The execution handle for tracking */
+  readonly handle: ExecutionHandle;
+
+  /** The full engine execution result */
+  readonly engineResult: InvokerExecutionResult;
+
+  /** Emitted result in structured format */
+  readonly emittedResult: EmittedResult;
+
+  /** Exportable result if export format was specified */
+  readonly exportableResult?: ExportableResult;
+
+  /** ROI engine input if formatForROIEngine was true */
+  readonly roiEngineInput?: ROIEngineInput;
+}
+
+/**
  * ExecutionGateway - Primary interface for the API boundary layer.
  *
  * This is the single entry point for all external interactions with the
@@ -279,6 +331,32 @@ export interface ExecutionGateway {
    * @throws ResourceExhaustedError if max concurrent executions reached
    */
   submitPlan(plan: SimulationPlan): Promise<ExecutionHandle>;
+
+  /**
+   * Submit a SimulationPlan for execution via agentics-simulation-engine.
+   *
+   * This method invokes the agentics-simulation-engine as the authoritative
+   * execution environment, capturing deterministic outputs, timelines, and
+   * artifacts. Results are emitted in structured format consumable by
+   * exporters and enterprise-roi-engine.
+   *
+   * Key capabilities:
+   * - Deterministic execution with seed-based reproducibility
+   * - Complete timeline capture for audit and replay
+   * - Artifact collection for all generated outputs
+   * - Structured result emission for downstream consumers
+   *
+   * @param plan - The SimulationPlan to execute
+   * @param options - Engine execution options
+   * @returns Complete engine execution result with structured outputs
+   * @throws PlanValidationError if validation fails
+   * @throws EngineConnectionError if engine is unreachable
+   * @throws EngineInvocationError if execution fails
+   */
+  submitPlanToEngine(
+    plan: SimulationPlan,
+    options?: EngineExecutionOptions
+  ): Promise<EngineExecutionCompleteResult>;
 
   /**
    * Get the current status of an execution.
@@ -335,6 +413,16 @@ export interface ExecutionGateway {
    * @returns HealthStatus with component-level health information
    */
   healthCheck(): Promise<HealthStatus>;
+
+  /**
+   * Check the health of the simulation engine.
+   *
+   * Returns health status of the agentics-simulation-engine including
+   * component health and resource availability.
+   *
+   * @returns Engine health status
+   */
+  getEngineHealth(): Promise<EngineHealthStatus>;
 }
 
 // ============================================================================
@@ -367,19 +455,27 @@ interface InternalExecutionContext {
  * - Manages execution lifecycle
  * - Delegates all state to StateRepository
  * - Provides health monitoring
+ * - Supports engine-based execution via agentics-simulation-engine
  */
 export class ExecutionGatewayImpl implements ExecutionGateway {
   private readonly activeExecutions = new Map<ExecutionId, InternalExecutionContext>();
   private readonly startTime = new Date();
   private totalExecutions = 0;
+  private readonly engineInvoker: SimulationEngineInvoker;
+  private readonly resultEmitter: StructuredResultEmitter;
 
   constructor(
     private readonly config: GatewayConfig,
     private readonly stateRepository: StateRepository,
     private readonly resourcePool: ResourcePool,
     private readonly connectivityTester: ConnectivityTester,
-    private readonly conditionEvaluator: ConditionEvaluator
-  ) {}
+    private readonly conditionEvaluator: ConditionEvaluator,
+    engineConfig?: Partial<EngineConnectionConfig>
+  ) {
+    // Initialize engine invoker and result emitter
+    this.engineInvoker = createSimulationEngineInvoker(engineConfig);
+    this.resultEmitter = createStructuredResultEmitter();
+  }
 
   /**
    * Submit a SimulationPlan for execution
@@ -493,6 +589,179 @@ export class ExecutionGatewayImpl implements ExecutionGateway {
     // For now, we return the handle and execution will be triggered separately
 
     return handle;
+  }
+
+  /**
+   * Submit a SimulationPlan for execution via agentics-simulation-engine
+   *
+   * This method invokes the engine as the authoritative execution environment,
+   * capturing deterministic outputs, timelines, and artifacts.
+   */
+  async submitPlanToEngine(
+    plan: SimulationPlan,
+    options?: EngineExecutionOptions
+  ): Promise<EngineExecutionCompleteResult> {
+    // Validate plan integrity - verify hash before proceeding
+    const planForHashing = this.getPlanWithoutHash(plan);
+    const computedHash = computeObjectHash(planForHashing);
+    if (computedHash.toLowerCase() !== plan.planHash.toLowerCase()) {
+      throw new PlanIntegrityError(
+        `Plan hash mismatch: expected ${plan.planHash}, computed ${computedHash}`
+      );
+    }
+
+    // Validate the plan through full pipeline
+    const validationResult = await validatePlan(
+      plan,
+      this.resourcePool,
+      this.connectivityTester,
+      this.conditionEvaluator,
+      {}
+    );
+
+    if (!validationResult.valid) {
+      throw new PlanValidationError(validationResult);
+    }
+
+    // Generate execution identifiers
+    const executionId = uuidv4() as ExecutionId;
+    const tenantId = this.extractTenantId(plan);
+
+    // Create execution handle
+    const handle = createExecutionHandle({
+      executionId,
+      planId: plan.planId,
+      planHash: plan.planHash,
+      tenantId,
+      estimatedDuration: plan.executionConfig.timeoutSeconds * 1000,
+    });
+
+    // Track execution
+    const internalContext: InternalExecutionContext = {
+      handle,
+      startTime: new Date(),
+      stateNamespace: this.generateStateNamespace(executionId),
+      isolationLevel: plan.stateConfig.isolationLevel,
+      maxDuration: plan.executionConfig.timeoutSeconds * 1000,
+      status: 'running',
+      abortRequested: false,
+    };
+    this.activeExecutions.set(executionId, internalContext);
+    this.totalExecutions++;
+
+    try {
+      // Invoke the simulation engine
+      const engineResult = await this.engineInvoker.invoke(plan, options?.seed);
+
+      // Convert engine result to the format expected by the emitter
+      const engineExecutionResult = this.convertToEngineExecutionResult(engineResult);
+
+      // Emit structured result
+      const emittedResult = await this.resultEmitter.emit(engineExecutionResult);
+
+      // Prepare optional exports
+      let exportableResult: ExportableResult | undefined;
+      let roiEngineInput: ROIEngineInput | undefined;
+
+      if (options?.exportFormat) {
+        exportableResult = this.resultEmitter.formatForExporter(
+          engineExecutionResult,
+          options.exportFormat
+        );
+      }
+
+      if (options?.formatForROIEngine) {
+        roiEngineInput = this.resultEmitter.formatForROIEngine(engineExecutionResult);
+      }
+
+      // Update execution status
+      internalContext.status = engineResult.status;
+
+      return {
+        handle,
+        engineResult,
+        emittedResult,
+        exportableResult,
+        roiEngineInput,
+      };
+    } catch (error) {
+      // Update status on failure
+      internalContext.status = 'failed';
+      throw error;
+    } finally {
+      // Remove from active executions when complete
+      this.activeExecutions.delete(executionId);
+    }
+  }
+
+  /**
+   * Get the health of the simulation engine
+   */
+  async getEngineHealth(): Promise<EngineHealthStatus> {
+    return this.engineInvoker.getEngineHealth();
+  }
+
+  /**
+   * Convert InvokerExecutionResult to the format expected by StructuredResultEmitter
+   */
+  private convertToEngineExecutionResult(
+    result: InvokerExecutionResult
+  ): import('../engine/structured-result-emitter.js').EngineExecutionResult {
+    // Map artifacts from engine format to execution artifact format
+    const mappedArtifacts = result.artifacts.map((a) => ({
+      artifactId: a.artifactId,
+      type: a.type as 'state_snapshot' | 'checkpoint' | 'log_bundle' | 'trace_export' | 'custom',
+      name: a.name,
+      location: a.location,
+      hash: a.contentHash,
+      contentType: a.contentType,
+      sizeBytes: a.sizeBytes,
+      createdAt: a.createdAt,
+      metadata: a.metadata,
+    }));
+
+    // Map errors to expected format
+    const mappedErrors = result.errors.map((e) => ({
+      errorId: e.errorId,
+      stepId: e.stepId,
+      errorCode: e.errorCode,
+      errorMessage: e.message,
+      timestamp: e.timestamp,
+    }));
+
+    return {
+      executionId: result.executionId,
+      planId: result.executionId, // Use executionId as planId placeholder
+      planVersion: '1.0.0',
+      status: result.status,
+      startedAt: result.startedAt,
+      completedAt: result.completedAt,
+      durationMs: result.durationMs,
+      planHash: result.planHash,
+      deterministicSeed: Number(result.deterministicSeed),
+      stepResults: result.stepResults,
+      agentSummaries: result.agentSummaries,
+      integrationObservations: result.integrationObservations,
+      finalState: result.finalState,
+      summary: result.summary,
+      telemetry: result.telemetry,
+      validationOutcomes: {
+        preConditions: [],
+        postConditions: [],
+        invariantViolations: [],
+        allPassed: true,
+      },
+      artifacts: mappedArtifacts,
+      reproducibilityProof: {
+        deterministic: result.reproducibilityData.deterministic,
+        seed: Number(result.deterministicSeed),
+        normalizedResultHash: result.reproducibilityData.normalizedResultHash,
+        conditions: ['Same seed', 'Same plan hash', 'Same execution order'],
+        verificationMethod: result.reproducibilityData.verificationMethod,
+      },
+      checkpoints: [],
+      errors: mappedErrors,
+    };
   }
 
   /**
