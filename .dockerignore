@@ -1,0 +1,13 @@
+node_modules
+dist
+.git
+.gitignore
+*.md
+tests
+.claude
+.claude-flow
+.swarm
+plans
+docs
+*.log
+.env*
