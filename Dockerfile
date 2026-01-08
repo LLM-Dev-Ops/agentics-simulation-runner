@@ -29,6 +29,9 @@ RUN npm install --omit=dev --ignore-scripts
 # Copy built files from builder
 COPY --from=builder /app/dist ./dist
 
+# Copy contracts directory (JSON schemas for validation)
+COPY --from=builder /app/contracts ./contracts
+
 # Set environment variables
 ENV NODE_ENV=production
 ENV PORT=8080

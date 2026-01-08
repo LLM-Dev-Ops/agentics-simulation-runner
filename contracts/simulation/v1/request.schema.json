@@ -1,0 +1,842 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://agentics.io/contracts/simulation/v1/request.schema.json",
+  "title": "SimulationPlan Request Schema",
+  "description": "JSON Schema for validating incoming simulation execution requests at the HTTP boundary. This is the authoritative contract for all simulation requests.",
+  "type": "object",
+  "required": [
+    "version",
+    "planId",
+    "planVersion",
+    "planHash",
+    "createdAt",
+    "createdBy",
+    "metadata",
+    "executionConfig",
+    "stateConfig",
+    "workflow",
+    "agents"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "description": "Plan schema version (semantic version)"
+    },
+    "planId": {
+      "$ref": "#/definitions/uuid",
+      "description": "Unique plan identifier (UUID v4)"
+    },
+    "planVersion": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "description": "Plan version (semantic version)"
+    },
+    "planHash": {
+      "$ref": "#/definitions/sha256Hash",
+      "description": "SHA-256 hash of the plan content (excluding this field)"
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the plan was created (ISO 8601)"
+    },
+    "createdBy": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "description": "Who created the plan"
+    },
+    "sourceIntent": {
+      "type": "string",
+      "maxLength": 4096,
+      "description": "Original intent that generated this plan"
+    },
+    "metadata": {
+      "$ref": "#/definitions/planMetadata",
+      "description": "Plan metadata"
+    },
+    "executionConfig": {
+      "$ref": "#/definitions/executionConfig",
+      "description": "Execution configuration"
+    },
+    "stateConfig": {
+      "$ref": "#/definitions/stateConfig",
+      "description": "State configuration"
+    },
+    "workflow": {
+      "$ref": "#/definitions/workflowConfig",
+      "description": "Workflow configuration with steps and dependencies"
+    },
+    "workflows": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/workflowDefinition"
+      },
+      "description": "Complete workflow definitions (if using named workflows)"
+    },
+    "agents": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/agentDefinition"
+      },
+      "minItems": 0,
+      "description": "Agent definitions"
+    },
+    "integrations": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/integrationEndpoint"
+      },
+      "description": "Integration endpoint definitions"
+    },
+    "observability": {
+      "$ref": "#/definitions/observabilityConfig",
+      "description": "Observability configuration"
+    },
+    "validation": {
+      "$ref": "#/definitions/validationConfig",
+      "description": "Validation configuration"
+    }
+  },
+  "definitions": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      "description": "UUID v4 format"
+    },
+    "sha256Hash": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{64}$",
+      "description": "SHA-256 hash (64 hex characters)"
+    },
+    "planMetadata": {
+      "type": "object",
+      "required": ["id", "name", "createdAt", "createdBy"],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/uuid"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "createdBy": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "maxItems": 50
+        }
+      }
+    },
+    "executionConfig": {
+      "type": "object",
+      "required": ["timeoutSeconds", "maxSteps"],
+      "additionalProperties": false,
+      "properties": {
+        "timeoutSeconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400,
+          "description": "Maximum execution time in seconds (max 24 hours)"
+        },
+        "maxSteps": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000,
+          "description": "Maximum number of steps to execute"
+        },
+        "checkpointInterval": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 100,
+          "description": "Interval for automatic checkpoints (number of steps)"
+        },
+        "retryPolicy": {
+          "$ref": "#/definitions/retryPolicy"
+        },
+        "resourceLimits": {
+          "$ref": "#/definitions/resourceLimits"
+        },
+        "concurrencyModel": {
+          "type": "string",
+          "enum": ["sequential", "parallel", "bounded", "adaptive"],
+          "default": "sequential"
+        },
+        "maxConcurrentAgents": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "deterministicSeed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "Deterministic seed for reproducible execution (max 2^53-1)"
+        }
+      }
+    },
+    "retryPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxRetries": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10,
+          "default": 3
+        },
+        "initialDelayMs": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 60000,
+          "default": 1000
+        },
+        "maxDelayMs": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 300000,
+          "default": 30000
+        },
+        "backoffMultiplier": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 10,
+          "default": 2
+        },
+        "retryableErrors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "resourceLimits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxCpu": {
+          "type": "number",
+          "minimum": 0.1,
+          "maximum": 128
+        },
+        "maxMemory": {
+          "type": "integer",
+          "minimum": 134217728,
+          "description": "Max memory in bytes (min 128MB)"
+        },
+        "maxStorage": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxNetworkBandwidth": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "stateConfig": {
+      "type": "object",
+      "required": ["databaseConnectionId", "schemaNamespace", "isolationLevel"],
+      "additionalProperties": false,
+      "properties": {
+        "databaseConnectionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schemaNamespace": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63,
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "isolationLevel": {
+          "type": "string",
+          "enum": ["READ_UNCOMMITTED", "READ_COMMITTED", "REPEATABLE_READ", "SERIALIZABLE"],
+          "default": "SERIALIZABLE"
+        },
+        "vectorDimensions": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "initialState": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "workflowConfig": {
+      "type": "object",
+      "required": ["steps"],
+      "additionalProperties": false,
+      "properties": {
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/workflowStep"
+          },
+          "minItems": 0
+        },
+        "dependencies": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "description": "Step dependency map (step ID -> dependent step IDs)"
+        },
+        "checkpoints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Checkpoint step IDs"
+        }
+      }
+    },
+    "workflowStep": {
+      "type": "object",
+      "required": ["id", "type"],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["AGENT_INVOCATION", "INTEGRATION_CALL", "STATE_MUTATION", "CONDITIONAL", "PARALLEL", "LOOP", "CHECKPOINT", "WAIT", "CUSTOM"]
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "agentRef": {
+          "type": "string",
+          "description": "Reference to agent (for AGENT_INVOCATION)"
+        },
+        "integrationRef": {
+          "type": "string",
+          "description": "Reference to integration (for INTEGRATION_CALL)"
+        },
+        "inputs": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "outputs": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "condition": {
+          "type": "string",
+          "description": "Condition expression for conditional steps"
+        },
+        "timeout": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Step timeout in milliseconds"
+        },
+        "retryPolicy": {
+          "$ref": "#/definitions/retryPolicy"
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "workflowDefinition": {
+      "type": "object",
+      "required": ["id", "name", "steps"],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string"
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/workflowStep"
+          }
+        },
+        "inputs": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "outputs": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "agentDefinition": {
+      "type": "object",
+      "required": ["id", "type", "role", "capabilities", "llmBinding", "memoryBinding"],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["autonomous", "reactive", "hybrid"]
+        },
+        "role": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/agentCapability"
+          }
+        },
+        "llmBinding": {
+          "$ref": "#/definitions/agentLLMBinding"
+        },
+        "memoryBinding": {
+          "$ref": "#/definitions/agentMemoryBinding"
+        },
+        "constraints": {
+          "$ref": "#/definitions/agentConstraints"
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "agentCapability": {
+      "type": "object",
+      "required": ["capabilityId"],
+      "additionalProperties": false,
+      "properties": {
+        "capabilityId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "parameters": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "required": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "agentLLMBinding": {
+      "type": "object",
+      "required": ["provider", "modelId", "apiKeyReference", "configuration", "systemPrompt"],
+      "additionalProperties": false,
+      "properties": {
+        "provider": {
+          "type": "string",
+          "enum": ["openai", "anthropic", "google", "azure", "bedrock", "custom"]
+        },
+        "modelId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "apiKeyReference": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Reference to API key in secret manager (NOT the actual key)"
+        },
+        "configuration": {
+          "$ref": "#/definitions/llmModelConfig"
+        },
+        "systemPrompt": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32768
+        },
+        "baseUrl": {
+          "type": "string",
+          "format": "uri"
+        },
+        "apiVersion": {
+          "type": "string"
+        }
+      }
+    },
+    "llmModelConfig": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "temperature": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 2
+        },
+        "maxTokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "topP": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "frequencyPenalty": {
+          "type": "number",
+          "minimum": -2,
+          "maximum": 2
+        },
+        "presencePenalty": {
+          "type": "number",
+          "minimum": -2,
+          "maximum": 2
+        },
+        "stopSequences": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 10
+        }
+      }
+    },
+    "agentMemoryBinding": {
+      "type": "object",
+      "required": ["workingMemory"],
+      "additionalProperties": false,
+      "properties": {
+        "workingMemory": {
+          "$ref": "#/definitions/workingMemoryConfig"
+        },
+        "longTermMemory": {
+          "$ref": "#/definitions/longTermMemoryConfig"
+        }
+      }
+    },
+    "workingMemoryConfig": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "maxSize": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "evictionPolicy": {
+          "type": "string",
+          "enum": ["LRU", "FIFO", "LFU"]
+        }
+      }
+    },
+    "longTermMemoryConfig": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "vectorDimensions": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "similarityThreshold": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "maxResults": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "agentConstraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxConcurrentActions": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "rateLimitPerMinute": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "allowedStateMutations": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "maxTokensPerInvocation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxTotalInvocations": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "integrationEndpoint": {
+      "type": "object",
+      "required": ["id", "type", "config"],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "type": {
+          "type": "string",
+          "enum": ["HTTP", "GRPC", "WEBSOCKET", "MESSAGE_QUEUE", "DATABASE", "CUSTOM"]
+        },
+        "config": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "authentication": {
+          "$ref": "#/definitions/integrationAuthentication"
+        },
+        "recordForReplay": {
+          "type": "boolean",
+          "default": false
+        },
+        "useMock": {
+          "type": "boolean",
+          "default": false
+        },
+        "mockConfig": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "integrationAuthentication": {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["none", "api_key", "bearer", "basic", "oauth2", "mtls"]
+        },
+        "credentialReference": {
+          "type": "string"
+        },
+        "parameters": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "observabilityConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "tracing": {
+          "$ref": "#/definitions/tracingConfig"
+        },
+        "metrics": {
+          "$ref": "#/definitions/metricsConfig"
+        },
+        "logging": {
+          "$ref": "#/definitions/loggingConfig"
+        }
+      }
+    },
+    "tracingConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "samplingRate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 1
+        },
+        "sampleOnError": {
+          "type": "boolean",
+          "default": true
+        },
+        "spanAttributes": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "metricsConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "exportIntervalMs": {
+          "type": "integer",
+          "minimum": 1000
+        },
+        "customMetrics": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "loggingConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "level": {
+          "type": "string",
+          "enum": ["DEBUG", "INFO", "WARN", "ERROR", "FATAL"],
+          "default": "INFO"
+        },
+        "logPrompts": {
+          "type": "boolean",
+          "default": false
+        },
+        "logCompletions": {
+          "type": "boolean",
+          "default": false
+        },
+        "logStateMutations": {
+          "type": "boolean",
+          "default": true
+        }
+      }
+    },
+    "validationConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "preConditions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/condition"
+          }
+        },
+        "postConditions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/condition"
+          }
+        },
+        "invariants": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/invariant"
+          }
+        },
+        "validateStateSchema": {
+          "type": "boolean",
+          "default": false
+        },
+        "stateSchema": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "condition": {
+      "type": "object",
+      "required": ["id", "type", "expression"],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "type": "string"
+        },
+        "expression": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean",
+          "default": true
+        }
+      }
+    },
+    "invariant": {
+      "type": "object",
+      "required": ["id", "expression", "description", "haltOnViolation"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expression": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string"
+        },
+        "haltOnViolation": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

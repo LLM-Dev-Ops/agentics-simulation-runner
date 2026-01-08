@@ -256,6 +256,27 @@ export type {
 } from './engine/index.js';
 
 // ============================================================================
+// Contract Enforcement (HTTP Boundary Validation)
+// ============================================================================
+
+export {
+  ContractValidator,
+  getContractValidator,
+  validateSimulationRequest,
+  validateSimulationRequestOrThrow,
+  ContractValidationException,
+  createExecutionProof,
+} from './contracts/index.js';
+
+export type {
+  ContractValidationResult,
+  ContractValidationError,
+  ExecutionProof,
+  LayerExecuted,
+  ExecutionGraphNode,
+} from './contracts/index.js';
+
+// ============================================================================
 // Version Information
 // ============================================================================
 

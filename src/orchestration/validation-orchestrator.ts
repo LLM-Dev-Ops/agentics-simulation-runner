@@ -4,14 +4,26 @@
  * Coordinates all validation activities for submitted SimulationPlans.
  * Implements Phase 1 (VALIDATION) of the Master Execution Flow.
  *
+ * CONTRACT ENFORCEMENT NOTE:
+ * ============================================================================
+ * Schema validation (INV-IN-001) is now enforced at the HTTP boundary using
+ * Ajv with contracts/simulation/v1/request.schema.json. This orchestrator
+ * can skip schema validation when 'skipSchemaValidation' is true (the default
+ * when called from a contract-enforced endpoint).
+ *
+ * The SINGLE validation boundary is at src/server.ts using ContractValidator.
+ * This orchestrator handles semantic, resource, connectivity, and pre-condition
+ * validation AFTER contract enforcement has passed.
+ * ============================================================================
+ *
  * The ValidationOrchestrator ensures plans are:
- * - Syntactically valid (schema validation)
+ * - Syntactically valid (schema validation) - NOW OPTIONAL (done at HTTP boundary)
  * - Semantically complete (reference validation, hash verification)
  * - Executable (resource availability, connectivity)
  * - Ready (pre-conditions satisfied)
  *
  * Validation Phases (from Pseudocode Section 3):
- * 1. Schema Validation (INV-IN-001) - Required fields, types, nested structures
+ * 1. Schema Validation (INV-IN-001) - SKIPPED if contract-enforced at HTTP boundary
  * 2. Semantic Validation (INV-IN-002, INV-IN-003, INV-IN-005) - Hash, cycles, references
  * 3. Resource Availability (INV-IN-007) - CPU, memory, storage, duration limits
  * 4. Integration Connectivity (INV-IN-006) - Endpoint reachability, credentials
@@ -54,6 +66,18 @@ import {
  * Configuration options for the ValidationOrchestrator
  */
 export interface ValidationOrchestratorOptions {
+  /**
+   * Whether to skip schema validation (use when contract enforcement
+   * is active at the HTTP boundary)
+   *
+   * When true, the orchestrator assumes the plan has already been
+   * validated against the JSON Schema at the HTTP boundary using
+   * Ajv/ContractValidator.
+   *
+   * @default false
+   */
+  readonly skipSchemaValidation?: boolean;
+
   /**
    * Whether to fail fast on first validation error
    */
@@ -125,6 +149,7 @@ const DEFAULT_OPTIONS: Required<Omit<ValidationOrchestratorOptions,
   'tenantId' | 'stateRepository' | 'evaluationContext' |
   'schemaOptions' | 'semanticOptions' | 'resourceOptions' |
   'connectivityOptions' | 'preConditionOptions'>> = {
+  skipSchemaValidation: false,
   failFast: false,
   parallelValidation: false,
 };
@@ -200,6 +225,7 @@ export class ValidationOrchestrator {
   async validatePlan(plan: unknown): Promise<FullValidationResult> {
     const startTime = Date.now();
     const failFast = this.options.failFast ?? false;
+    const skipSchemaValidation = this.options.skipSchemaValidation ?? false;
 
     // Initialize empty results for fail-fast early returns
     const emptySchemaResult = createEmptyResult('SCHEMA_VALIDATION');
@@ -210,30 +236,49 @@ export class ValidationOrchestrator {
 
     // =========================================================================
     // Phase 1: Schema Validation (INV-IN-001)
+    // SKIPPED when contract enforcement is active at HTTP boundary
     // =========================================================================
-    const schemaResult = validateSchema(plan, this.options.schemaOptions);
+    let schemaResult: ValidationResult;
 
-    if (!schemaResult.valid && failFast) {
-      return this.buildFullResult(
-        schemaResult,
-        emptySemanticResult,
-        emptyResourceResult,
-        emptyConnectivityResult,
-        emptyPreConditionResult,
-        startTime
-      );
-    }
+    if (skipSchemaValidation) {
+      // Contract enforcement at HTTP boundary has already validated the schema
+      // using Ajv. Mark as passed and continue to semantic validation.
+      schemaResult = {
+        valid: true,
+        errors: [],
+        warnings: [{
+          code: 'SCHEMA_VALIDATION_SKIPPED',
+          message: 'Schema validation skipped - contract enforcement active at HTTP boundary',
+          path: '',
+        }],
+        phase: 'SCHEMA_VALIDATION',
+        validatedAt: new Date().toISOString(),
+      };
+    } else {
+      schemaResult = validateSchema(plan, this.options.schemaOptions);
 
-    // If schema validation failed, we cannot proceed with further validation
-    if (!schemaResult.valid) {
-      return this.buildFullResult(
-        schemaResult,
-        emptySemanticResult,
-        emptyResourceResult,
-        emptyConnectivityResult,
-        emptyPreConditionResult,
-        startTime
-      );
+      if (!schemaResult.valid && failFast) {
+        return this.buildFullResult(
+          schemaResult,
+          emptySemanticResult,
+          emptyResourceResult,
+          emptyConnectivityResult,
+          emptyPreConditionResult,
+          startTime
+        );
+      }
+
+      // If schema validation failed, we cannot proceed with further validation
+      if (!schemaResult.valid) {
+        return this.buildFullResult(
+          schemaResult,
+          emptySemanticResult,
+          emptyResourceResult,
+          emptyConnectivityResult,
+          emptyPreConditionResult,
+          startTime
+        );
+      }
     }
 
     // Plan is now known to be a valid SimulationPlan
