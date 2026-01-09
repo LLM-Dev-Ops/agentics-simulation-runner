@@ -383,15 +383,60 @@ async function handleRunner(req: IncomingMessage, res: ServerResponse, path: str
       });
       graphEdges.push({ from: 'execution', to: 'finalization', type: 'sequence' });
 
+      // ===================================================================
+      // CONSTRUCT EXECUTION_METADATA
+      // The CLI expects execution_metadata in the response. Construct it
+      // from the engine result data as the runner is the execution boundary.
+      // ===================================================================
+      const executionMetadata = {
+        resultId: result.handle.executionId,
+        planId: result.engineResult.executionId,
+        planVersion: '1.0.0',
+        startedAt: result.engineResult.startedAt,
+        completedAt: result.engineResult.completedAt,
+        durationMs: result.engineResult.durationMs,
+        status: result.engineResult.status,
+        executedBy: 'agentics-simulation-runner',
+        environment: {
+          hostname: 'agentics-runner',
+          version: '1.0.0',
+          region: process.env.CLOUD_RUN_REGION || 'local',
+        },
+      };
+
       const proof = createExecutionProof(proofId, layers, graphNodes, graphEdges);
       sendJson(res, 200, {
         success: true,
         result,
+        execution_metadata: executionMetadata,
       }, proof);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
+      const errorTime = new Date().toISOString();
+
+      // Include execution_metadata even on error for CLI error reporting
+      const errorExecutionMetadata = {
+        resultId: proofId,
+        planId: proofId,
+        planVersion: '1.0.0',
+        startedAt: new Date(requestStartTime).toISOString(),
+        completedAt: errorTime,
+        durationMs: Date.now() - requestStartTime,
+        status: 'failed' as const,
+        executedBy: 'agentics-simulation-runner',
+        environment: {
+          hostname: 'agentics-runner',
+          version: '1.0.0',
+          region: process.env.CLOUD_RUN_REGION || 'local',
+        },
+      };
+
       const proof = createExecutionProof(proofId, layers, graphNodes, graphEdges);
-      sendJson(res, 400, { success: false, error: message }, proof);
+      sendJson(res, 400, {
+        success: false,
+        error: message,
+        execution_metadata: errorExecutionMetadata,
+      }, proof);
     }
     return;
   }
