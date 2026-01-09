@@ -168,12 +168,31 @@ async function handleRunner(req: IncomingMessage, res: ServerResponse, path: str
             childNodes: [],
           });
 
+          // Include execution_metadata for contract validation errors
+          const contractValidationErrorTime = new Date().toISOString();
+          const contractValidationMetadata = {
+            resultId: proofId,
+            planId: proofId,
+            planVersion: '1.0.0',
+            startedAt: new Date(requestStartTime).toISOString(),
+            completedAt: contractValidationErrorTime,
+            durationMs: Date.now() - requestStartTime,
+            status: 'failed' as const,
+            executedBy: 'agentics-simulation-runner',
+            environment: {
+              hostname: 'agentics-runner',
+              version: '1.0.0',
+              region: process.env.CLOUD_RUN_REGION || 'local',
+            },
+          };
+
           const proof = createExecutionProof(proofId, layers, graphNodes, graphEdges);
           sendJson(res, 400, {
             success: false,
             error: 'Contract validation failed',
             validation_errors: error.result.errors,
             schema_id: error.result.schemaId,
+            execution_metadata: contractValidationMetadata,
           }, proof);
           return;
         }
@@ -285,12 +304,31 @@ async function handleRunner(req: IncomingMessage, res: ServerResponse, path: str
             childNodes: [],
           });
 
+          // Include execution_metadata for contract validation errors
+          const contractValidationErrorTime = new Date().toISOString();
+          const contractValidationMetadata = {
+            resultId: proofId,
+            planId: proofId,
+            planVersion: '1.0.0',
+            startedAt: new Date(requestStartTime).toISOString(),
+            completedAt: contractValidationErrorTime,
+            durationMs: Date.now() - requestStartTime,
+            status: 'failed' as const,
+            executedBy: 'agentics-simulation-runner',
+            environment: {
+              hostname: 'agentics-runner',
+              version: '1.0.0',
+              region: process.env.CLOUD_RUN_REGION || 'local',
+            },
+          };
+
           const proof = createExecutionProof(proofId, layers, graphNodes, graphEdges);
           sendJson(res, 400, {
             success: false,
             error: 'Contract validation failed',
             validation_errors: error.result.errors,
             schema_id: error.result.schemaId,
+            execution_metadata: contractValidationMetadata,
           }, proof);
           return;
         }
