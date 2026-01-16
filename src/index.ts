@@ -277,6 +277,77 @@ export type {
 } from './contracts/index.js';
 
 // ============================================================================
+// Executive Synthesis (Readiness Reporting)
+// ============================================================================
+
+export type {
+  DeploymentRecommendation,
+  RiskLevel,
+  BlockingSeverity,
+  BlockingIssue,
+  SynthesisMetrics,
+  DeployReference,
+  DeployReferenceInput,
+  RiskAssessment,
+  RiskFactor,
+  ExecutiveSummary,
+  MetricsInput,
+} from './synthesis/index.js';
+
+export {
+  isApproved,
+  isRejected,
+  isDeferred,
+  hasBlockingIssues,
+  hasElevatedRisk,
+  isProductionTarget,
+  // Blocking issue creators
+  createValidationBlockingIssue,
+  createTimeoutBlockingIssue,
+  createPreconditionBlockingIssue,
+  createExecutionBlockingIssue,
+  createResourceBlockingIssue,
+  // Risk assessment
+  calculateRiskLevel,
+  buildRiskAssessment,
+  elevateRiskForProduction,
+  // Recommendation
+  determineRecommendation,
+  generateRationale,
+  // Executive summary builder
+  buildExecutiveSummary,
+  // Helpers
+  determineEnvironmentFromCategory,
+  countFailedSteps,
+  calculateSuccessRate,
+  shouldElevateRisk,
+} from './synthesis/index.js';
+
+// ============================================================================
+// Commands (Simulation Execution)
+// ============================================================================
+
+export type {
+  CommandStatus,
+  SimulationScenario,
+  SimulateCommandInput,
+  SimulateCommandResult,
+  SimulateRunInput,
+  SimulateRunResult,
+  ScenarioValidationResult,
+} from './commands/index.js';
+
+export {
+  isSuccessfulCommand,
+  isSuccessfulRun,
+  scenarioRequiresElevation,
+  validateScenario,
+  extractBlockingIssues,
+  executeSimulateCommand,
+  executeSimulateRunCommand,
+} from './commands/index.js';
+
+// ============================================================================
 // Version Information
 // ============================================================================
 
