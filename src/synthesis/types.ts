@@ -400,3 +400,475 @@ export function hasElevatedRisk(summary: ExecutiveSummary): boolean {
 export function isProductionTarget(environment: DeployReference['environment']): boolean {
   return environment === 'production' || environment === 'enterprise';
 }
+
+// =============================================================================
+// Confidence Interval Types
+// =============================================================================
+
+/**
+ * Statistical confidence interval for simulation metrics
+ */
+export interface ConfidenceInterval {
+  /**
+   * Lower bound of the interval
+   */
+  readonly lower: number;
+
+  /**
+   * Upper bound of the interval
+   */
+  readonly upper: number;
+
+  /**
+   * Confidence level (e.g., 0.95 for 95% confidence)
+   */
+  readonly confidence_level: number;
+
+  /**
+   * Sample size used to calculate the interval
+   */
+  readonly sample_size: number;
+}
+
+/**
+ * Confidence intervals for simulation outcomes
+ */
+export interface OutcomeConfidenceIntervals {
+  /**
+   * Success rate confidence interval
+   */
+  readonly success_rate: ConfidenceInterval;
+
+  /**
+   * Execution duration confidence interval (in ms)
+   */
+  readonly duration_ms?: ConfidenceInterval;
+
+  /**
+   * Resource utilization confidence interval
+   */
+  readonly resource_utilization?: ConfidenceInterval;
+
+  /**
+   * Token consumption confidence interval
+   */
+  readonly token_consumption?: ConfidenceInterval;
+}
+
+// =============================================================================
+// Anomaly Detection Types
+// =============================================================================
+
+/**
+ * Anomaly severity classification
+ */
+export type AnomalySeverity = 'INFO' | 'WARNING' | 'ERROR' | 'CRITICAL';
+
+/**
+ * Anomaly category classification
+ */
+export type AnomalyCategory =
+  | 'performance'
+  | 'resource'
+  | 'behavior'
+  | 'timing'
+  | 'state'
+  | 'boundary'
+  | 'determinism';
+
+/**
+ * Detected anomaly during simulation execution
+ */
+export interface SimulationAnomaly {
+  /**
+   * Unique anomaly identifier
+   */
+  readonly id: string;
+
+  /**
+   * Anomaly severity
+   */
+  readonly severity: AnomalySeverity;
+
+  /**
+   * Anomaly category
+   */
+  readonly category: AnomalyCategory;
+
+  /**
+   * Human-readable description
+   */
+  readonly description: string;
+
+  /**
+   * Step ID where anomaly was detected (if applicable)
+   */
+  readonly stepId?: string;
+
+  /**
+   * Expected value/behavior
+   */
+  readonly expected?: string;
+
+  /**
+   * Observed value/behavior
+   */
+  readonly observed?: string;
+
+  /**
+   * Deviation from expected (for numeric anomalies)
+   */
+  readonly deviation?: number;
+
+  /**
+   * Statistical z-score (if applicable)
+   */
+  readonly z_score?: number;
+
+  /**
+   * When the anomaly was detected
+   */
+  readonly detectedAt: ISO8601Timestamp;
+
+  /**
+   * Suggested action
+   */
+  readonly suggested_action?: string;
+}
+
+// =============================================================================
+// Pre-Run Feasibility Types
+// =============================================================================
+
+/**
+ * Feasibility assessment result
+ */
+export type FeasibilityStatus = 'FEASIBLE' | 'CONDITIONAL' | 'INFEASIBLE';
+
+/**
+ * Resource projection for pre-run analysis
+ */
+export interface ResourceProjection {
+  /**
+   * Resource type
+   */
+  readonly resource_type: 'cpu' | 'memory' | 'tokens' | 'time' | 'network' | 'storage';
+
+  /**
+   * Estimated requirement
+   */
+  readonly estimated: number;
+
+  /**
+   * Available capacity
+   */
+  readonly available: number;
+
+  /**
+   * Unit of measurement
+   */
+  readonly unit: string;
+
+  /**
+   * Utilization percentage (estimated / available)
+   */
+  readonly utilization_percent: number;
+
+  /**
+   * Whether this resource is a constraint
+   */
+  readonly is_constraint: boolean;
+
+  /**
+   * Warning if approaching limits
+   */
+  readonly warning?: string;
+}
+
+/**
+ * Pre-run feasibility constraint
+ */
+export interface FeasibilityConstraint {
+  /**
+   * Constraint identifier
+   */
+  readonly id: string;
+
+  /**
+   * Constraint type
+   */
+  readonly type: 'resource' | 'timing' | 'dependency' | 'permission' | 'boundary';
+
+  /**
+   * Constraint description
+   */
+  readonly description: string;
+
+  /**
+   * Whether constraint is satisfied
+   */
+  readonly satisfied: boolean;
+
+  /**
+   * Severity if not satisfied
+   */
+  readonly severity: 'blocking' | 'warning' | 'info';
+
+  /**
+   * Remediation if not satisfied
+   */
+  readonly remediation?: string;
+}
+
+/**
+ * Pre-run feasibility analysis result
+ */
+export interface PreRunFeasibility {
+  /**
+   * Feasibility ID
+   */
+  readonly feasibility_id: UUID;
+
+  /**
+   * Analysis timestamp
+   */
+  readonly analyzed_at: ISO8601Timestamp;
+
+  /**
+   * Overall feasibility status
+   */
+  readonly status: FeasibilityStatus;
+
+  /**
+   * Resource projections
+   */
+  readonly resource_projections: readonly ResourceProjection[];
+
+  /**
+   * Feasibility constraints
+   */
+  readonly constraints: readonly FeasibilityConstraint[];
+
+  /**
+   * Estimated execution duration (ms)
+   */
+  readonly estimated_duration_ms: number;
+
+  /**
+   * Estimated token consumption
+   */
+  readonly estimated_tokens: number;
+
+  /**
+   * Risk factors identified pre-run
+   */
+  readonly pre_run_risks: readonly RiskFactor[];
+
+  /**
+   * Recommendations before execution
+   */
+  readonly recommendations: readonly string[];
+}
+
+// =============================================================================
+// Decision Packet Types
+// =============================================================================
+
+/**
+ * Outcome category for simulation results
+ */
+export type OutcomeCategory =
+  | 'convergence'
+  | 'divergence'
+  | 'timeout'
+  | 'constraint_violation'
+  | 'resource_exhaustion'
+  | 'success'
+  | 'partial_success';
+
+/**
+ * Outcome summary for Decision Packet
+ */
+export interface OutcomeSummary {
+  /**
+   * Overall outcome category
+   */
+  readonly category: OutcomeCategory;
+
+  /**
+   * Human-readable outcome description
+   */
+  readonly description: string;
+
+  /**
+   * Whether simulation converged
+   */
+  readonly converged: boolean;
+
+  /**
+   * Output validity assessment
+   */
+  readonly output_valid: boolean;
+
+  /**
+   * Resource efficiency score (0.0 - 1.0)
+   */
+  readonly resource_efficiency: number;
+
+  /**
+   * Number of iterations/steps completed
+   */
+  readonly iterations_completed: number;
+
+  /**
+   * Total iterations/steps planned
+   */
+  readonly iterations_planned: number;
+
+  /**
+   * Final state hash for verification
+   */
+  readonly final_state_hash?: SHA256Hash;
+}
+
+/**
+ * Decision Packet - Complete synthesis artifact at simulation completion
+ *
+ * Contains outcome summary, confidence intervals, and flagged anomalies
+ * for executive decision-making.
+ */
+export interface DecisionPacket {
+  /**
+   * Packet identifier
+   */
+  readonly packet_id: UUID;
+
+  /**
+   * Generated timestamp
+   */
+  readonly generated_at: ISO8601Timestamp;
+
+  /**
+   * Packet version for schema evolution
+   */
+  readonly packet_version: '1.0.0';
+
+  /**
+   * Reference to the execution
+   */
+  readonly execution_reference: {
+    readonly execution_id: UUID;
+    readonly plan_id: UUID;
+    readonly plan_hash: SHA256Hash;
+    readonly plan_version: string;
+    readonly scenario_id?: string;
+  };
+
+  /**
+   * Outcome summary
+   */
+  readonly outcome: OutcomeSummary;
+
+  /**
+   * Confidence intervals for key metrics
+   */
+  readonly confidence_intervals: OutcomeConfidenceIntervals;
+
+  /**
+   * Flagged anomalies
+   */
+  readonly anomalies: readonly SimulationAnomaly[];
+
+  /**
+   * Executive summary (existing synthesis)
+   */
+  readonly executive_summary: ExecutiveSummary;
+
+  /**
+   * Pre-run feasibility (if pre-run analysis was performed)
+   */
+  readonly pre_run_feasibility?: PreRunFeasibility;
+
+  /**
+   * Simulation-specific metadata
+   */
+  readonly metadata: {
+    /**
+     * Simulation seed used (for reproducibility)
+     */
+    readonly seed?: number;
+
+    /**
+     * Whether deterministic execution was achieved
+     */
+    readonly deterministic: boolean;
+
+    /**
+     * Environment where simulation ran
+     */
+    readonly environment: DeployReference['environment'];
+
+    /**
+     * Artifacts produced
+     */
+    readonly artifact_count: number;
+
+    /**
+     * Total execution duration (ms)
+     */
+    readonly total_duration_ms: number;
+  };
+}
+
+// =============================================================================
+// Decision Packet Type Guards
+// =============================================================================
+
+/**
+ * Check if simulation converged
+ */
+export function hasConverged(packet: DecisionPacket): boolean {
+  return packet.outcome.converged;
+}
+
+/**
+ * Check if simulation output is valid
+ */
+export function hasValidOutput(packet: DecisionPacket): boolean {
+  return packet.outcome.output_valid;
+}
+
+/**
+ * Check if there are critical anomalies
+ */
+export function hasCriticalAnomalies(packet: DecisionPacket): boolean {
+  return packet.anomalies.some((a) => a.severity === 'CRITICAL');
+}
+
+/**
+ * Check if feasibility analysis was performed
+ */
+export function hasFeasibilityAnalysis(packet: DecisionPacket): boolean {
+  return packet.pre_run_feasibility !== undefined;
+}
+
+/**
+ * Check if execution was deterministic
+ */
+export function isDeterministicExecution(packet: DecisionPacket): boolean {
+  return packet.metadata.deterministic;
+}
+
+/**
+ * Check if simulation is feasible
+ */
+export function isFeasible(feasibility: PreRunFeasibility): boolean {
+  return feasibility.status === 'FEASIBLE';
+}
+
+/**
+ * Check if simulation has blocking constraints
+ */
+export function hasBlockingConstraints(feasibility: PreRunFeasibility): boolean {
+  return feasibility.constraints.some((c) => !c.satisfied && c.severity === 'blocking');
+}

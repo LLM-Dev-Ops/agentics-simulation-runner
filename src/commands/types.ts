@@ -16,7 +16,11 @@ import type {
 
 import type { SimulationPlan } from '../types/simulation-plan.js';
 import type { SimulationResult, StepResult } from '../types/simulation-result.js';
-import type { ExecutiveSummary } from '../synthesis/index.js';
+import type {
+  ExecutiveSummary,
+  PreRunFeasibility,
+  DecisionPacket,
+} from '../synthesis/index.js';
 
 // =============================================================================
 // Command Status Types
@@ -383,4 +387,275 @@ export function scenarioRequiresElevation(scenario?: SimulationScenario): boolea
   }
   const category = scenario.category.toLowerCase();
   return category === 'enterprise' || category === 'production';
+}
+
+// =============================================================================
+// Simulate Create Command Types
+// =============================================================================
+
+/**
+ * Resource allocation configuration for simulation creation
+ */
+export interface ResourceAllocation {
+  /**
+   * Maximum memory allocation in bytes
+   */
+  readonly maxMemoryBytes?: number;
+
+  /**
+   * Maximum token allocation
+   */
+  readonly maxTokens?: number;
+
+  /**
+   * CPU core allocation
+   */
+  readonly cpuCores?: number;
+
+  /**
+   * Network bandwidth limit in bytes/sec
+   */
+  readonly networkBandwidthBps?: number;
+
+  /**
+   * Storage allocation in bytes
+   */
+  readonly storageBytes?: number;
+}
+
+/**
+ * Input for simulate create command
+ */
+export interface SimulateCreateInput {
+  /**
+   * Simulation plan to instantiate
+   */
+  readonly plan: SimulationPlan;
+
+  /**
+   * Optional scenario configuration
+   */
+  readonly scenario?: SimulationScenario;
+
+  /**
+   * Resource allocation configuration
+   */
+  readonly resources?: ResourceAllocation;
+
+  /**
+   * Whether to perform pre-run feasibility analysis
+   */
+  readonly analyzeFeasibility?: boolean;
+
+  /**
+   * Expected duration per step (ms) for feasibility estimation
+   */
+  readonly expectedDurationPerStepMs?: number;
+
+  /**
+   * Environment context
+   */
+  readonly environment?: {
+    /**
+     * Target environment name
+     */
+    readonly name: 'development' | 'staging' | 'production' | 'enterprise';
+
+    /**
+     * Environment-specific variables
+     */
+    readonly variables?: Record<string, string>;
+  };
+
+  /**
+   * Git context for traceability
+   */
+  readonly gitContext?: {
+    /**
+     * Current commit SHA
+     */
+    readonly commitSha?: string;
+
+    /**
+     * Branch name
+     */
+    readonly branch?: string;
+
+    /**
+     * Repository URL
+     */
+    readonly repository?: string;
+  };
+}
+
+/**
+ * Simulation context created for execution
+ */
+export interface SimulationContext {
+  /**
+   * Context identifier
+   */
+  readonly contextId: UUID;
+
+  /**
+   * Plan reference
+   */
+  readonly planReference: {
+    readonly planId: UUID;
+    readonly planHash: SHA256Hash;
+    readonly planVersion: string;
+  };
+
+  /**
+   * Scenario reference (if provided)
+   */
+  readonly scenarioReference?: {
+    readonly scenarioId: string;
+    readonly scenarioName: string;
+    readonly category?: string;
+  };
+
+  /**
+   * Allocated resources
+   */
+  readonly allocatedResources: ResourceAllocation;
+
+  /**
+   * Creation timestamp
+   */
+  readonly createdAt: ISO8601Timestamp;
+
+  /**
+   * Expiration timestamp (context is valid until)
+   */
+  readonly expiresAt: ISO8601Timestamp;
+
+  /**
+   * Target environment
+   */
+  readonly environment: 'development' | 'staging' | 'production' | 'enterprise';
+
+  /**
+   * Estimated step count
+   */
+  readonly estimatedSteps: number;
+
+  /**
+   * Ready for execution
+   */
+  readonly ready: boolean;
+}
+
+/**
+ * Result of simulate create command
+ */
+export interface SimulateCreateResult {
+  /**
+   * Command execution ID
+   */
+  readonly commandId: UUID;
+
+  /**
+   * Command status
+   */
+  readonly status: CommandStatus;
+
+  /**
+   * When command started
+   */
+  readonly startedAt: ISO8601Timestamp;
+
+  /**
+   * When command completed
+   */
+  readonly completedAt: ISO8601Timestamp;
+
+  /**
+   * Total duration in milliseconds
+   */
+  readonly durationMs: DurationMs;
+
+  /**
+   * Created simulation context (if successful)
+   */
+  readonly context?: SimulationContext;
+
+  /**
+   * Pre-run feasibility analysis (if requested)
+   */
+  readonly feasibility?: PreRunFeasibility;
+
+  /**
+   * Validation warnings
+   */
+  readonly warnings: readonly string[];
+
+  /**
+   * Error details (if failed)
+   */
+  readonly error?: {
+    readonly code: string;
+    readonly message: string;
+    readonly details?: Record<string, unknown>;
+  };
+
+  /**
+   * Executive synthesis for readiness reporting
+   */
+  readonly synthesis?: ExecutiveSummary;
+}
+
+// =============================================================================
+// Enhanced Simulate Run Result with Decision Packet
+// =============================================================================
+
+/**
+ * Enhanced simulate run result with Decision Packet
+ */
+export interface SimulateRunResultWithPacket extends SimulateRunResult {
+  /**
+   * Decision Packet containing outcome summary, confidence intervals, and anomalies
+   */
+  readonly decisionPacket?: DecisionPacket;
+}
+
+/**
+ * Enhanced simulate command result with Decision Packet
+ */
+export interface SimulateCommandResultWithPacket extends SimulateCommandResult {
+  /**
+   * Decision Packet containing outcome summary, confidence intervals, and anomalies
+   */
+  readonly decisionPacket?: DecisionPacket;
+}
+
+// =============================================================================
+// Type Guards for New Types
+// =============================================================================
+
+/**
+ * Check if create result is successful
+ */
+export function isSuccessfulCreate(result: SimulateCreateResult): boolean {
+  return result.status === 'completed' && result.context !== undefined && !result.error;
+}
+
+/**
+ * Check if simulation context is ready
+ */
+export function isContextReady(context: SimulationContext): boolean {
+  return context.ready && new Date(context.expiresAt) > new Date();
+}
+
+/**
+ * Check if feasibility allows execution
+ */
+export function canProceedWithExecution(result: SimulateCreateResult): boolean {
+  if (!result.context?.ready) {
+    return false;
+  }
+  if (result.feasibility && result.feasibility.status === 'INFEASIBLE') {
+    return false;
+  }
+  return true;
 }

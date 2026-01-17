@@ -23,7 +23,23 @@ import type {
   BlockingIssue,
   BlockingSeverity,
   RiskFactor,
+  // Decision Packet types
+  DecisionPacket,
+  OutcomeSummary,
+  OutcomeCategory,
+  OutcomeConfidenceIntervals,
+  ConfidenceInterval,
+  SimulationAnomaly,
+  AnomalySeverity,
+  AnomalyCategory,
+  // Pre-run feasibility types
+  PreRunFeasibility,
+  FeasibilityStatus,
+  ResourceProjection,
+  FeasibilityConstraint,
 } from './types.js';
+
+import type { SHA256Hash } from '../types/common.js';
 
 import { isProductionTarget } from './types.js';
 
@@ -462,4 +478,646 @@ export function shouldElevateRisk(category?: string): boolean {
     lowerCategory.includes('prod') ||
     lowerCategory.includes('critical')
   );
+}
+
+// =============================================================================
+// Confidence Interval Builder
+// =============================================================================
+
+/**
+ * Build a confidence interval using normal approximation
+ */
+export function buildConfidenceInterval(
+  point_estimate: number,
+  sample_size: number,
+  confidence_level: number = 0.95
+): ConfidenceInterval {
+  // Z-scores for common confidence levels
+  const z_scores: Record<number, number> = {
+    0.90: 1.645,
+    0.95: 1.96,
+    0.99: 2.576,
+  };
+
+  const z = z_scores[confidence_level] ?? 1.96;
+
+  // Standard error approximation for proportions
+  const se = Math.sqrt((point_estimate * (1 - point_estimate)) / Math.max(sample_size, 1));
+  const margin = z * se;
+
+  return {
+    lower: Math.max(0, point_estimate - margin),
+    upper: Math.min(1, point_estimate + margin),
+    confidence_level,
+    sample_size,
+  };
+}
+
+/**
+ * Build confidence interval for duration metrics
+ */
+export function buildDurationConfidenceInterval(
+  mean_duration: number,
+  sample_size: number,
+  std_dev?: number,
+  confidence_level: number = 0.95
+): ConfidenceInterval {
+  const z_scores: Record<number, number> = {
+    0.90: 1.645,
+    0.95: 1.96,
+    0.99: 2.576,
+  };
+
+  const z = z_scores[confidence_level] ?? 1.96;
+
+  // Use coefficient of variation approximation if std_dev not provided
+  const estimated_std_dev = std_dev ?? mean_duration * 0.2;
+  const se = estimated_std_dev / Math.sqrt(Math.max(sample_size, 1));
+  const margin = z * se;
+
+  return {
+    lower: Math.max(0, mean_duration - margin),
+    upper: mean_duration + margin,
+    confidence_level,
+    sample_size,
+  };
+}
+
+// =============================================================================
+// Anomaly Detection Builder
+// =============================================================================
+
+/**
+ * Create a simulation anomaly
+ */
+export function createSimulationAnomaly(
+  severity: AnomalySeverity,
+  category: AnomalyCategory,
+  description: string,
+  options?: {
+    stepId?: string;
+    expected?: string;
+    observed?: string;
+    deviation?: number;
+    z_score?: number;
+    suggested_action?: string;
+  }
+): SimulationAnomaly {
+  return {
+    id: uuidv4(),
+    severity,
+    category,
+    description,
+    stepId: options?.stepId,
+    expected: options?.expected,
+    observed: options?.observed,
+    deviation: options?.deviation,
+    z_score: options?.z_score,
+    detectedAt: new Date().toISOString() as ISO8601Timestamp,
+    suggested_action: options?.suggested_action,
+  };
+}
+
+/**
+ * Detect anomalies from step results
+ */
+export function detectAnomalies(
+  stepResults: readonly { status: string; durationMs?: number; stepId: string }[],
+  expectedDurationMs?: number,
+  deterministic?: boolean,
+  seed?: number
+): SimulationAnomaly[] {
+  const anomalies: SimulationAnomaly[] = [];
+
+  // Check for timing anomalies
+  if (expectedDurationMs !== undefined) {
+    for (const step of stepResults) {
+      if (step.durationMs !== undefined) {
+        const deviation = (step.durationMs - expectedDurationMs) / expectedDurationMs;
+        if (Math.abs(deviation) > 0.5) {
+          anomalies.push(
+            createSimulationAnomaly(
+              deviation > 1 ? 'WARNING' : 'INFO',
+              'timing',
+              `Step ${step.stepId} duration deviated ${(deviation * 100).toFixed(0)}% from expected`,
+              {
+                stepId: step.stepId,
+                expected: `${expectedDurationMs}ms`,
+                observed: `${step.durationMs}ms`,
+                deviation,
+                suggested_action: deviation > 1 ? 'Investigate performance bottleneck' : undefined,
+              }
+            )
+          );
+        }
+      }
+    }
+  }
+
+  // Check for non-determinism when seed is provided
+  if (seed !== undefined && deterministic === false) {
+    anomalies.push(
+      createSimulationAnomaly('WARNING', 'determinism', 'Non-deterministic behavior detected despite seed being set', {
+        expected: 'Deterministic execution',
+        observed: 'Non-deterministic execution',
+        suggested_action: 'Review steps for external dependencies or race conditions',
+      })
+    );
+  }
+
+  // Check for state anomalies (failure patterns)
+  const failedSteps = stepResults.filter((s) => s.status === 'failure' || s.status === 'failed');
+  if (failedSteps.length > stepResults.length * 0.5) {
+    anomalies.push(
+      createSimulationAnomaly('ERROR', 'behavior', 'High failure rate detected across steps', {
+        expected: 'Majority of steps succeed',
+        observed: `${failedSteps.length}/${stepResults.length} steps failed`,
+        deviation: failedSteps.length / stepResults.length,
+        suggested_action: 'Review simulation configuration and preconditions',
+      })
+    );
+  }
+
+  return anomalies;
+}
+
+// =============================================================================
+// Outcome Summary Builder
+// =============================================================================
+
+/**
+ * Determine outcome category from execution results
+ */
+export function determineOutcomeCategory(
+  completed: boolean,
+  success: boolean,
+  timedOut: boolean,
+  resourceExhausted: boolean,
+  constraintViolation: boolean,
+  successRate: number
+): OutcomeCategory {
+  if (timedOut) return 'timeout';
+  if (resourceExhausted) return 'resource_exhaustion';
+  if (constraintViolation) return 'constraint_violation';
+  if (!completed) return 'divergence';
+  if (success && successRate === 1.0) return 'success';
+  if (successRate > 0) return 'partial_success';
+  return 'convergence';
+}
+
+/**
+ * Build outcome summary from execution results
+ */
+export function buildOutcomeSummary(
+  stepResults: readonly { status: string }[],
+  completed: boolean,
+  timedOut: boolean,
+  resourceExhausted: boolean,
+  constraintViolation: boolean,
+  plannedIterations: number,
+  finalStateHash?: SHA256Hash
+): OutcomeSummary {
+  const completedIterations = stepResults.filter(
+    (s) => s.status === 'success' || s.status === 'completed'
+  ).length;
+  const successRate = plannedIterations > 0 ? completedIterations / plannedIterations : 0;
+  const success = successRate === 1.0 && completed;
+
+  const category = determineOutcomeCategory(
+    completed,
+    success,
+    timedOut,
+    resourceExhausted,
+    constraintViolation,
+    successRate
+  );
+
+  // Determine convergence
+  const converged = category === 'success' || category === 'partial_success' || category === 'convergence';
+
+  // Determine output validity
+  const output_valid = completed && !constraintViolation && successRate >= 0.5;
+
+  // Calculate resource efficiency (simplified)
+  const resource_efficiency = Math.min(1.0, successRate * (completed ? 1.0 : 0.5));
+
+  // Generate description
+  const descriptions: Record<OutcomeCategory, string> = {
+    success: 'Simulation completed successfully with all steps passing.',
+    partial_success: `Simulation completed with ${(successRate * 100).toFixed(0)}% success rate.`,
+    convergence: 'Simulation converged to a stable state.',
+    divergence: 'Simulation failed to converge to a stable state.',
+    timeout: 'Simulation timed out before completion.',
+    resource_exhaustion: 'Simulation terminated due to resource exhaustion.',
+    constraint_violation: 'Simulation terminated due to constraint violation.',
+  };
+
+  return {
+    category,
+    description: descriptions[category],
+    converged,
+    output_valid,
+    resource_efficiency,
+    iterations_completed: completedIterations,
+    iterations_planned: plannedIterations,
+    final_state_hash: finalStateHash,
+  };
+}
+
+// =============================================================================
+// Pre-Run Feasibility Builder
+// =============================================================================
+
+/**
+ * Input for building pre-run feasibility
+ */
+export interface PreRunFeasibilityInput {
+  /**
+   * Planned step count
+   */
+  readonly plannedSteps: number;
+
+  /**
+   * Expected duration per step (ms)
+   */
+  readonly expectedDurationPerStepMs: number;
+
+  /**
+   * Timeout configuration (ms)
+   */
+  readonly timeoutMs: number;
+
+  /**
+   * Token limit
+   */
+  readonly tokenLimit?: number;
+
+  /**
+   * Estimated tokens per step
+   */
+  readonly estimatedTokensPerStep?: number;
+
+  /**
+   * Memory limit (bytes)
+   */
+  readonly memoryLimitBytes?: number;
+
+  /**
+   * Estimated memory per step (bytes)
+   */
+  readonly estimatedMemoryPerStepBytes?: number;
+
+  /**
+   * Required preconditions
+   */
+  readonly requiredPreconditions?: readonly string[];
+
+  /**
+   * Available preconditions
+   */
+  readonly availablePreconditions?: readonly string[];
+
+  /**
+   * Target environment
+   */
+  readonly environment: DeployReference['environment'];
+}
+
+/**
+ * Build pre-run feasibility analysis
+ */
+export function buildPreRunFeasibility(input: PreRunFeasibilityInput): PreRunFeasibility {
+  const feasibilityId = uuidv4() as UUID;
+  const analyzedAt = new Date().toISOString() as ISO8601Timestamp;
+
+  const resourceProjections: ResourceProjection[] = [];
+  const constraints: FeasibilityConstraint[] = [];
+  const preRunRisks: RiskFactor[] = [];
+  const recommendations: string[] = [];
+
+  // Estimate duration
+  const estimatedDurationMs = input.plannedSteps * input.expectedDurationPerStepMs;
+  const timeUtilization = estimatedDurationMs / input.timeoutMs;
+
+  resourceProjections.push({
+    resource_type: 'time',
+    estimated: estimatedDurationMs,
+    available: input.timeoutMs,
+    unit: 'ms',
+    utilization_percent: timeUtilization * 100,
+    is_constraint: timeUtilization > 0.9,
+    warning: timeUtilization > 0.8 ? 'Execution time approaching timeout limit' : undefined,
+  });
+
+  if (timeUtilization > 1.0) {
+    constraints.push({
+      id: 'time-constraint',
+      type: 'timing',
+      description: 'Estimated duration exceeds timeout configuration',
+      satisfied: false,
+      severity: 'blocking',
+      remediation: 'Increase timeout or reduce number of steps',
+    });
+  }
+
+  // Estimate tokens
+  const estimatedTokens = input.estimatedTokensPerStep
+    ? input.plannedSteps * input.estimatedTokensPerStep
+    : input.plannedSteps * 1000; // Default estimate
+
+  if (input.tokenLimit) {
+    const tokenUtilization = estimatedTokens / input.tokenLimit;
+    resourceProjections.push({
+      resource_type: 'tokens',
+      estimated: estimatedTokens,
+      available: input.tokenLimit,
+      unit: 'tokens',
+      utilization_percent: tokenUtilization * 100,
+      is_constraint: tokenUtilization > 0.9,
+      warning: tokenUtilization > 0.8 ? 'Token usage approaching limit' : undefined,
+    });
+
+    if (tokenUtilization > 1.0) {
+      constraints.push({
+        id: 'token-constraint',
+        type: 'resource',
+        description: 'Estimated token usage exceeds limit',
+        satisfied: false,
+        severity: 'blocking',
+        remediation: 'Increase token limit or reduce step complexity',
+      });
+    }
+  }
+
+  // Check memory
+  if (input.memoryLimitBytes && input.estimatedMemoryPerStepBytes) {
+    const estimatedMemory = input.plannedSteps * input.estimatedMemoryPerStepBytes;
+    const memoryUtilization = estimatedMemory / input.memoryLimitBytes;
+    resourceProjections.push({
+      resource_type: 'memory',
+      estimated: estimatedMemory,
+      available: input.memoryLimitBytes,
+      unit: 'bytes',
+      utilization_percent: memoryUtilization * 100,
+      is_constraint: memoryUtilization > 0.9,
+      warning: memoryUtilization > 0.8 ? 'Memory usage approaching limit' : undefined,
+    });
+  }
+
+  // Check preconditions
+  if (input.requiredPreconditions && input.requiredPreconditions.length > 0) {
+    const available = new Set(input.availablePreconditions ?? []);
+    const missing = input.requiredPreconditions.filter((p) => !available.has(p));
+
+    if (missing.length > 0) {
+      constraints.push({
+        id: 'precondition-constraint',
+        type: 'dependency',
+        description: `Missing preconditions: ${missing.join(', ')}`,
+        satisfied: false,
+        severity: 'blocking',
+        remediation: 'Ensure all required preconditions are available',
+      });
+    } else {
+      constraints.push({
+        id: 'precondition-constraint',
+        type: 'dependency',
+        description: 'All preconditions satisfied',
+        satisfied: true,
+        severity: 'info',
+      });
+    }
+  }
+
+  // Add production risk
+  if (isProductionTarget(input.environment)) {
+    preRunRisks.push({
+      id: 'production-target',
+      category: 'deployment',
+      impact: 'Simulation targeting production environment',
+      likelihood: 1.0,
+      mitigation: 'Ensure thorough testing in staging first',
+    });
+    recommendations.push('Consider running simulation in staging environment first');
+  }
+
+  // Add resource utilization risk
+  if (resourceProjections.some((r) => r.utilization_percent > 80)) {
+    preRunRisks.push({
+      id: 'high-resource-utilization',
+      category: 'resource',
+      impact: 'High resource utilization may cause performance issues',
+      likelihood: 0.7,
+      mitigation: 'Monitor resource usage during execution',
+    });
+  }
+
+  // Determine overall status
+  const blockingConstraints = constraints.filter((c) => !c.satisfied && c.severity === 'blocking');
+  const warningConstraints = constraints.filter((c) => !c.satisfied && c.severity === 'warning');
+
+  let status: FeasibilityStatus;
+  if (blockingConstraints.length > 0) {
+    status = 'INFEASIBLE';
+  } else if (warningConstraints.length > 0 || preRunRisks.length > 0) {
+    status = 'CONDITIONAL';
+  } else {
+    status = 'FEASIBLE';
+  }
+
+  // Add recommendations based on status
+  if (status === 'INFEASIBLE') {
+    recommendations.push('Resolve blocking constraints before execution');
+  } else if (status === 'CONDITIONAL') {
+    recommendations.push('Review warnings and risks before proceeding');
+  }
+
+  return {
+    feasibility_id: feasibilityId,
+    analyzed_at: analyzedAt,
+    status,
+    resource_projections: resourceProjections,
+    constraints,
+    estimated_duration_ms: estimatedDurationMs,
+    estimated_tokens: estimatedTokens,
+    pre_run_risks: preRunRisks,
+    recommendations,
+  };
+}
+
+// =============================================================================
+// Decision Packet Builder
+// =============================================================================
+
+/**
+ * Input for building a Decision Packet
+ */
+export interface DecisionPacketInput {
+  /**
+   * Execution ID
+   */
+  readonly executionId: UUID;
+
+  /**
+   * Plan ID
+   */
+  readonly planId: UUID;
+
+  /**
+   * Plan hash
+   */
+  readonly planHash: SHA256Hash;
+
+  /**
+   * Plan version
+   */
+  readonly planVersion: string;
+
+  /**
+   * Scenario ID (if applicable)
+   */
+  readonly scenarioId?: string;
+
+  /**
+   * Step results from execution
+   */
+  readonly stepResults: readonly { status: string; durationMs?: number; stepId: string }[];
+
+  /**
+   * Planned step count
+   */
+  readonly plannedSteps: number;
+
+  /**
+   * Whether execution completed
+   */
+  readonly completed: boolean;
+
+  /**
+   * Whether execution timed out
+   */
+  readonly timedOut: boolean;
+
+  /**
+   * Whether resources were exhausted
+   */
+  readonly resourceExhausted: boolean;
+
+  /**
+   * Whether constraints were violated
+   */
+  readonly constraintViolation: boolean;
+
+  /**
+   * Final state hash
+   */
+  readonly finalStateHash?: SHA256Hash;
+
+  /**
+   * Simulation seed
+   */
+  readonly seed?: number;
+
+  /**
+   * Whether execution was deterministic
+   */
+  readonly deterministic: boolean;
+
+  /**
+   * Target environment
+   */
+  readonly environment: DeployReference['environment'];
+
+  /**
+   * Artifact count
+   */
+  readonly artifactCount: number;
+
+  /**
+   * Total duration in ms
+   */
+  readonly totalDurationMs: number;
+
+  /**
+   * Executive summary (existing synthesis)
+   */
+  readonly executiveSummary: ExecutiveSummary;
+
+  /**
+   * Pre-run feasibility (if analysis was performed)
+   */
+  readonly preRunFeasibility?: PreRunFeasibility;
+
+  /**
+   * Expected duration per step (for anomaly detection)
+   */
+  readonly expectedDurationPerStepMs?: number;
+}
+
+/**
+ * Build a Decision Packet from execution results
+ */
+export function buildDecisionPacket(input: DecisionPacketInput): DecisionPacket {
+  const packetId = uuidv4() as UUID;
+  const generatedAt = new Date().toISOString() as ISO8601Timestamp;
+
+  // Build outcome summary
+  const outcome = buildOutcomeSummary(
+    input.stepResults,
+    input.completed,
+    input.timedOut,
+    input.resourceExhausted,
+    input.constraintViolation,
+    input.plannedSteps,
+    input.finalStateHash
+  );
+
+  // Calculate success rate for confidence intervals
+  const successRate = input.plannedSteps > 0
+    ? input.stepResults.filter((s) => s.status === 'success' || s.status === 'completed').length / input.plannedSteps
+    : 0;
+
+  // Build confidence intervals
+  const confidence_intervals: OutcomeConfidenceIntervals = {
+    success_rate: buildConfidenceInterval(successRate, input.stepResults.length),
+    duration_ms: input.totalDurationMs > 0
+      ? buildDurationConfidenceInterval(
+          input.totalDurationMs / Math.max(input.stepResults.length, 1),
+          input.stepResults.length
+        )
+      : undefined,
+  };
+
+  // Detect anomalies
+  const anomalies = detectAnomalies(
+    input.stepResults,
+    input.expectedDurationPerStepMs,
+    input.deterministic,
+    input.seed
+  );
+
+  return {
+    packet_id: packetId,
+    generated_at: generatedAt,
+    packet_version: '1.0.0',
+    execution_reference: {
+      execution_id: input.executionId,
+      plan_id: input.planId,
+      plan_hash: input.planHash,
+      plan_version: input.planVersion,
+      scenario_id: input.scenarioId,
+    },
+    outcome,
+    confidence_intervals,
+    anomalies,
+    executive_summary: input.executiveSummary,
+    pre_run_feasibility: input.preRunFeasibility,
+    metadata: {
+      seed: input.seed,
+      deterministic: input.deterministic,
+      environment: input.environment,
+      artifact_count: input.artifactCount,
+      total_duration_ms: input.totalDurationMs,
+    },
+  };
 }
