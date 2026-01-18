@@ -3,6 +3,7 @@
  *
  * Provides executive-level summary and readiness reporting for simulation execution.
  * Includes Decision Packet generation with confidence intervals and anomaly detection.
+ * Includes Micro-to-Macro synthesis for board-level executive narratives.
  *
  * @module synthesis
  */
@@ -102,3 +103,47 @@ export {
 } from './builder.js';
 
 export type { PreRunFeasibilityInput, DecisionPacketInput } from './builder.js';
+
+// =============================================================================
+// Micro-to-Macro Synthesis Exports
+// =============================================================================
+
+export type {
+  // Micro behavior types
+  TokenUsageBehavior,
+  LatencyBehavior,
+  ErrorProbability,
+  MicroBehaviorSummary,
+  // Macro impact types
+  CostVarianceLevel,
+  BottleneckSeverity,
+  PolicyFriction,
+  MacroEnterpriseImpact,
+  // Scaling and synthesis types
+  ScalingScenario,
+  MicroMacroSynthesis,
+  SimulationTelemetryInput,
+} from './micro-macro-synthesis.js';
+
+export {
+  // Classification functions
+  classifyTokenUsage,
+  classifyLatency,
+  classifyErrorProbability,
+  // Translation functions
+  translateToCostVariance,
+  translateToBottleneck,
+  translateToPolicyFriction,
+  getScalingMultiplier,
+  // Narrative generation
+  generateCostDescription,
+  generateThroughputDescription,
+  generatePolicyDescription,
+  generateExecutiveNarrative,
+  generateKeyTakeaways,
+  generateStrategicRecommendation,
+  generateRiskSummary,
+  // Main synthesis builder
+  buildMicroMacroSynthesis,
+  formatSynthesisForBoard,
+} from './micro-macro-synthesis.js';
