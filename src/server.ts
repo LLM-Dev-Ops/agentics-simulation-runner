@@ -23,6 +23,7 @@ import {
   type ExecutionGraphNode,
   type ExecutionProof,
 } from './contracts/index.js';
+import { fireFanout, type FanoutContext } from './hooks/core-fanout.js';
 
 const PORT = parseInt(process.env.PORT || '8080', 10);
 
@@ -443,11 +444,28 @@ async function handleRunner(req: IncomingMessage, res: ServerResponse, path: str
       };
 
       const proof = createExecutionProof(proofId, layers, graphNodes, graphEdges);
-      sendJson(res, 200, {
+      const responseBody = {
         success: true,
         result,
         execution_metadata: executionMetadata,
-      }, proof);
+      };
+      sendJson(res, 200, responseBody, proof);
+
+      // Fire non-blocking fanout to core bundles
+      const correlationId = req.headers['x-correlation-id'];
+      const fanoutCtx: FanoutContext = {
+        executionId: result.handle.executionId,
+        timing: {
+          startedAt: result.engineResult.startedAt,
+          completedAt: result.engineResult.completedAt,
+          durationMs: result.engineResult.durationMs,
+        },
+        layersExecuted: layers.map((l) => l.layerId),
+        proofHash: proof.proofId,
+        artifacts: result.engineResult.artifacts,
+        correlationId: typeof correlationId === 'string' ? correlationId : undefined,
+      };
+      fireFanout(fanoutCtx).catch(() => {/* swallow — logged internally */});
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       const errorTime = new Date().toISOString();
@@ -694,11 +712,25 @@ async function handleSimulationRunner(req: IncomingMessage, res: ServerResponse)
       status = 'failed';
     }
 
-    sendJson(res, 200, {
-      simulationId,
-      status,
-      startedAt,
-    });
+    const responseBody = { simulationId, status, startedAt };
+    sendJson(res, 200, responseBody);
+
+    // Fire non-blocking fanout to core bundles on success
+    if (status !== 'failed') {
+      const correlationId = req.headers['x-correlation-id'];
+      const fanoutCtx: FanoutContext = {
+        executionId: simulationId!,
+        scenario: scenario!,
+        timing: {
+          startedAt: startedAt,
+          completedAt: new Date().toISOString(),
+          durationMs: Date.now() - Date.parse(startedAt),
+        },
+        layersExecuted: ['validation', 'scheduling', 'dispatch'],
+        correlationId: typeof correlationId === 'string' ? correlationId : undefined,
+      };
+      fireFanout(fanoutCtx).catch(() => {/* swallow — logged internally */});
+    }
   } catch (error) {
     if (error instanceof Error && error.message === 'Invalid JSON') {
       sendJson(res, 422, {
