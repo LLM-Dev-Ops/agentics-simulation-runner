@@ -14,9 +14,9 @@ const SERVICE_URLS = {
   intelligenceCore:
     process.env.INTELLIGENCE_CORE_URL ??
     'https://intelligence-core-1062287243982.us-central1.run.app',
-  securityCore:
-    process.env.SECURITY_CORE_URL ??
-    'https://security-core-1062287243982.us-central1.run.app',
+  automationCore:
+    process.env.AUTOMATION_CORE_URL ??
+    'https://automation-core-1062287243982.us-central1.run.app',
   dataCore:
     process.env.DATA_CORE_URL ??
     'https://data-core-1062287243982.us-central1.run.app',
@@ -42,6 +42,8 @@ export interface FanoutContext {
   layersExecuted: string[];
   /** Proof hash from the execution proof */
   proofHash?: string;
+  /** The runner result payload to forward to downstream services */
+  payload?: unknown;
   /** Artifacts produced by the simulation */
   artifacts?: unknown;
   /** Optional parent span ID for distributed tracing */
@@ -85,37 +87,33 @@ export async function fireFanout(ctx: FanoutContext): Promise<void> {
       name: 'intelligence-core',
       url: `${SERVICE_URLS.intelligenceCore}/v1/ingest/telemetry`,
       body: {
-        source: 'simulation-engine',
-        event: 'simulation_complete',
+        source: 'agentics-simulator-runner',
+        event_type: 'runner_completed',
         execution_id: ctx.executionId,
-        timing: ctx.timing,
-        layers_executed: ctx.layersExecuted,
-        proof_hash: ctx.proofHash ?? null,
         timestamp,
+        payload: ctx.payload ?? null,
       },
     },
     {
-      name: 'security-core',
-      url: `${SERVICE_URLS.securityCore}/v1/scan`,
+      name: 'automation-core',
+      url: `${SERVICE_URLS.automationCore}/v1/orchestration/event`,
       body: {
-        source: 'simulation-engine',
+        source: 'agentics-simulator-runner',
+        event_type: 'runner_completed',
         execution_id: ctx.executionId,
-        scenario: ctx.scenario ?? null,
-        artifacts: ctx.artifacts ?? null,
         timestamp,
+        payload: ctx.payload ?? null,
       },
     },
     {
       name: 'data-core',
       url: `${SERVICE_URLS.dataCore}/v1/lineage/record`,
       body: {
-        source: 'simulation-engine',
+        source: 'agentics-simulator-runner',
+        event_type: 'execution_lineage',
         execution_id: ctx.executionId,
-        parent_span_id: ctx.parentSpanId ?? null,
-        layers_executed: ctx.layersExecuted,
-        input_hash: ctx.inputHash ?? null,
-        output_hash: ctx.outputHash ?? null,
         timestamp,
+        payload: ctx.payload ?? null,
       },
     },
   ];

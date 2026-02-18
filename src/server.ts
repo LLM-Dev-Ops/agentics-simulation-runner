@@ -462,6 +462,7 @@ async function handleRunner(req: IncomingMessage, res: ServerResponse, path: str
         },
         layersExecuted: layers.map((l) => l.layerId),
         proofHash: proof.proofId,
+        payload: responseBody,
         artifacts: result.engineResult.artifacts,
         correlationId: typeof correlationId === 'string' ? correlationId : undefined,
       };
@@ -727,6 +728,7 @@ async function handleSimulationRunner(req: IncomingMessage, res: ServerResponse)
           durationMs: Date.now() - Date.parse(startedAt),
         },
         layersExecuted: ['validation', 'scheduling', 'dispatch'],
+        payload: responseBody,
         correlationId: typeof correlationId === 'string' ? correlationId : undefined,
       };
       fireFanout(fanoutCtx).catch(() => {/* swallow — logged internally */});
