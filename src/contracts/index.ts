@@ -49,13 +49,19 @@ interface AjvInstance {
 // ============================================================================
 
 /**
- * Load the simulation request schema from the contracts directory
+ * Load a contract schema from the contracts directory
  */
-function loadRequestSchema(): object {
-  const schemaPath = join(__dirname, '../../contracts/simulation/v1/request.schema.json');
+function loadSchema(relativePath: string): object {
+  const schemaPath = join(__dirname, '../../contracts', relativePath);
   const schemaContent = readFileSync(schemaPath, 'utf-8');
   return JSON.parse(schemaContent);
 }
+
+/** Contract schema for the flat SimulationPlan request body */
+export const SIMULATION_REQUEST_SCHEMA = 'simulation/v1/request.schema.json';
+
+/** Contract schema for the POST /v1/runner/plans submission envelope */
+export const PLAN_SUBMISSION_SCHEMA = 'runner/v1/plan-submission.schema.json';
 
 // ============================================================================
 // Ajv Instance Configuration
@@ -143,10 +149,10 @@ export class ContractValidator {
   private readonly schemaId: string;
   private readonly schemaVersion: string = 'v1';
 
-  constructor() {
+  constructor(schemaPath: string = SIMULATION_REQUEST_SCHEMA) {
     this.ajv = createAjvInstance();
-    const schema = loadRequestSchema();
-    this.schemaId = (schema as { $id?: string }).$id || 'simulation/v1/request.schema.json';
+    const schema = loadSchema(schemaPath);
+    this.schemaId = (schema as { $id?: string }).$id || schemaPath;
     this.validateRequest = this.ajv.compile(schema);
   }
 
@@ -223,6 +229,18 @@ export function getContractValidator(): ContractValidator {
     sharedValidator = new ContractValidator();
   }
   return sharedValidator;
+}
+
+let sharedPlanSubmissionValidator: ContractValidator | null = null;
+
+/**
+ * Get the shared validator for the POST /v1/runner/plans envelope
+ */
+export function getPlanSubmissionValidator(): ContractValidator {
+  if (!sharedPlanSubmissionValidator) {
+    sharedPlanSubmissionValidator = new ContractValidator(PLAN_SUBMISSION_SCHEMA);
+  }
+  return sharedPlanSubmissionValidator;
 }
 
 /**

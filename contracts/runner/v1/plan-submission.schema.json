@@ -1,0 +1,316 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://agentics.io/contracts/runner/v1/plan-submission.schema.json",
+  "title": "Runner Plan Submission Envelope",
+  "description": "Envelope for submitting a SimulationPlan to POST /v1/runner/plans. Structural validation happens here at the HTTP boundary; the full semantic contract is enforced by the execution gateway.",
+  "type": "object",
+  "required": [
+    "execution_id",
+    "plan"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "execution_id": {
+      "$ref": "#/definitions/uuid",
+      "description": "Caller-assigned execution identifier used to correlate this submission across services"
+    },
+    "parent_span_id": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{16}$",
+      "description": "W3C trace-context parent span id. Child spans for agent resolution, connection establishment and dispatch are recorded under it."
+    },
+    "plan": {
+      "$ref": "#/definitions/simulationPlan"
+    }
+  },
+  "definitions": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "sha256Hash": {
+      "type": "string",
+      "pattern": "^[a-fA-F0-9]{64}$"
+    },
+    "semanticVersion": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    },
+    "simulationPlan": {
+      "type": "object",
+      "description": "SimulationPlan in the runner's execution shape (agents carry an invocationSpec, integrations carry a connectionSpec).",
+      "required": [
+        "planId",
+        "planVersion",
+        "planHash",
+        "createdAt",
+        "createdBy",
+        "sourceIntent",
+        "executionConfig",
+        "workflow",
+        "agents",
+        "integrations"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "planId": {
+          "$ref": "#/definitions/uuid"
+        },
+        "planVersion": {
+          "$ref": "#/definitions/semanticVersion"
+        },
+        "planHash": {
+          "$ref": "#/definitions/sha256Hash",
+          "description": "SHA-256 over the canonical plan with planHash omitted and deterministicSeed as a bigint"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "createdBy": {
+          "type": "object",
+          "required": [
+            "name",
+            "version",
+            "instanceId"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "version": {
+              "$ref": "#/definitions/semanticVersion"
+            },
+            "instanceId": {
+              "$ref": "#/definitions/uuid"
+            }
+          }
+        },
+        "sourceIntent": {
+          "type": "object",
+          "required": [
+            "intentId",
+            "intentHash"
+          ],
+          "properties": {
+            "intentId": {
+              "$ref": "#/definitions/uuid"
+            },
+            "intentHash": {
+              "$ref": "#/definitions/sha256Hash"
+            }
+          }
+        },
+        "executionConfig": {
+          "type": "object",
+          "required": [
+            "maxDuration",
+            "resourceLimits",
+            "concurrencyModel",
+            "isolationLevel",
+            "deterministicSeed"
+          ],
+          "additionalProperties": true,
+          "properties": {
+            "maxDuration": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "resourceLimits": {
+              "type": "object"
+            },
+            "concurrencyModel": {
+              "type": "string",
+              "enum": [
+                "SEQUENTIAL",
+                "PARALLEL",
+                "ADAPTIVE"
+              ]
+            },
+            "isolationLevel": {
+              "type": "string",
+              "enum": [
+                "READ_COMMITTED",
+                "REPEATABLE_READ",
+                "SERIALIZABLE"
+              ]
+            },
+            "deterministicSeed": {
+              "description": "Decimal integer. Sent as a string because JSON has no bigint; widened to bigint before execution.",
+              "oneOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[0-9]+$"
+                },
+                {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              ]
+            }
+          }
+        },
+        "workflow": {
+          "type": "object",
+          "required": [
+            "steps"
+          ],
+          "additionalProperties": true,
+          "properties": {
+            "steps": {
+              "type": "array",
+              "minItems": 1
+            }
+          }
+        },
+        "agents": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "agentId",
+              "agentType",
+              "name",
+              "configuration",
+              "invocationSpec"
+            ],
+            "additionalProperties": true,
+            "properties": {
+              "agentId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "agentType": {
+                "type": "string",
+                "enum": [
+                  "CONVERSATIONAL",
+                  "TOOL_USE",
+                  "REASONING",
+                  "PLANNING",
+                  "CODING",
+                  "ANALYSIS",
+                  "CUSTOM"
+                ]
+              },
+              "invocationSpec": {
+                "type": "object",
+                "required": [
+                  "provider",
+                  "modelId",
+                  "promptTemplate",
+                  "maxTokens",
+                  "temperature"
+                ],
+                "additionalProperties": true,
+                "properties": {
+                  "provider": {
+                    "type": "string",
+                    "enum": [
+                      "ANTHROPIC",
+                      "OPENAI",
+                      "AZURE_OPENAI",
+                      "GOOGLE",
+                      "COHERE",
+                      "CUSTOM"
+                    ]
+                  },
+                  "modelId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "maxTokens": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "temperature": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 2
+                  },
+                  "promptTemplate": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "configuration": {
+                "type": "object",
+                "required": [
+                  "parameters"
+                ],
+                "additionalProperties": true,
+                "properties": {
+                  "parameters": {
+                    "type": "object"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "integrations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "integrationId",
+              "adapterType",
+              "name",
+              "connectionSpec",
+              "idempotent"
+            ],
+            "additionalProperties": true,
+            "properties": {
+              "integrationId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "adapterType": {
+                "type": "string",
+                "enum": [
+                  "HTTP_REST",
+                  "GRAPHQL",
+                  "GRPC",
+                  "DATABASE",
+                  "MESSAGE_QUEUE",
+                  "FILE_SYSTEM",
+                  "AGENTICS_ECOSYSTEM",
+                  "CUSTOM"
+                ]
+              },
+              "connectionSpec": {
+                "type": "object",
+                "required": [
+                  "credentialRef"
+                ],
+                "additionalProperties": true,
+                "properties": {
+                  "baseUrl": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "credentialRef": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              },
+              "idempotent": {
+                "type": "boolean"
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
