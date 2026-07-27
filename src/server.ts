@@ -11,12 +11,16 @@
  * logic runs.
  */
 
-import { createServer, IncomingMessage, ServerResponse } from 'http';
+import { createServer, IncomingMessage, ServerResponse, Server } from 'http';
+import { randomBytes } from 'crypto';
+import { pathToFileURL } from 'url';
 import { createExecutionGateway, DEFAULT_GATEWAY_CONFIG } from './api/execution-gateway.js';
 import type { SimulationPlan } from './types/simulation-plan.js';
+import type { SimulationPlan as ExecutionPlan } from './types/plan.js';
 import { v4 as uuidv4 } from 'uuid';
 import {
   getContractValidator,
+  getPlanSubmissionValidator,
   ContractValidationException,
   createExecutionProof,
   type LayerExecuted,
@@ -24,6 +28,16 @@ import {
   type ExecutionProof,
 } from './contracts/index.js';
 import { fireFanout, type FanoutContext } from './hooks/core-fanout.js';
+import { createAgentResolver } from './orchestration/agent-resolver.js';
+import { createConnectionEstablisher } from './orchestration/connection-establisher.js';
+import {
+  executePlan,
+  deserializePlan,
+  toLayersExecuted,
+  PlanDeserializationError,
+  type PipelineStageRecord,
+  type PlanExecutionDependencies,
+} from './orchestration/plan-execution-pipeline.js';
 
 const PORT = parseInt(process.env.PORT || '8080', 10);
 
@@ -36,8 +50,33 @@ const gateway = createExecutionGateway({
   maxConcurrentExecutions: 100,
 });
 
-// Initialize the contract validator (single instance)
+// Initialize the contract validators (single instance each)
 const contractValidator = getContractValidator();
+const planSubmissionValidator = getPlanSubmissionValidator();
+
+/**
+ * Real execution dependencies.
+ *
+ * Constructed at module load so a deployment with no provider credentials or
+ * no vault configuration fails at startup rather than silently mocking
+ * (ADR-0001 Decision 3).
+ */
+const pipelineDeps: PlanExecutionDependencies = {
+  gateway,
+  agentResolver: createAgentResolver(),
+  connectionEstablisher: createConnectionEstablisher(),
+};
+
+const STAGE_LAYER_TYPE: Record<PipelineStageRecord['stage'], LayerExecuted['layerType']> = {
+  'agent-resolution': 'execution',
+  'connection-establishment': 'execution',
+  'engine-dispatch': 'dispatch',
+};
+
+/** Generate a W3C trace-context compatible span id */
+function newSpanId(): string {
+  return randomBytes(8).toString('hex');
+}
 
 /**
  * Parse JSON body from request
@@ -109,6 +148,186 @@ function createLayerRecord(
  */
 function validateRequestContract(body: unknown): void {
   contractValidator.validateOrThrow(body);
+}
+
+/**
+ * Handle POST /v1/runner/plans - submit a SimulationPlan for real execution
+ *
+ * Body: { execution_id, parent_span_id?, plan }
+ * Validated against runner/v1/plan-submission.schema.json (envelope) and
+ * simulation/v1/request.schema.json (plan).
+ *
+ * The plan is executed by the real pipeline. Telemetry — layers executed,
+ * completion time, duration — is taken from what the pipeline observed, and
+ * fanout to the Layer-3 cores happens only if a plan actually executed.
+ */
+async function handlePlanSubmission(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const proofId = uuidv4();
+  const requestStartTime = Date.now();
+  const layers: LayerExecuted[] = [];
+  const graphNodes: ExecutionGraphNode[] = [];
+  const graphEdges: { from: string; to: string; type: 'dependency' | 'sequence' | 'parallel' }[] = [];
+
+  const body = (await parseBody(req)) as {
+    execution_id?: string;
+    parent_span_id?: string;
+    plan?: unknown;
+  };
+
+  // --- Envelope + plan contract validation ---
+  const validationStartTime = Date.now();
+  let plan;
+  try {
+    planSubmissionValidator.validateOrThrow(body);
+    plan = deserializePlan(body.plan);
+  } catch (error) {
+    if (error instanceof PlanDeserializationError) {
+      sendJson(res, 400, { success: false, error: error.message, code: error.code });
+      return;
+    }
+    if (error instanceof ContractValidationException) {
+      layers.push(
+        createLayerRecord('contract-validation', 'validation', validationStartTime, 'error', {
+          errors: error.result.errors.slice(0, 10),
+        })
+      );
+      const proof = createExecutionProof(proofId, layers, graphNodes, graphEdges);
+      sendJson(
+        res,
+        400,
+        {
+          success: false,
+          error: 'Contract validation failed',
+          validation_errors: error.result.errors,
+          schema_id: error.result.schemaId,
+        },
+        proof
+      );
+      return;
+    }
+    throw error;
+  }
+
+  layers.push(
+    createLayerRecord('contract-validation', 'validation', validationStartTime, 'success', {
+      schemaId: planSubmissionValidator.getSchemaInfo().id,
+    })
+  );
+  graphNodes.push({
+    nodeId: 'contract-validation',
+    nodeType: 'checkpoint',
+    status: 'completed',
+    startedAt: new Date(validationStartTime).toISOString(),
+    completedAt: new Date().toISOString(),
+    parentNodes: [],
+    childNodes: [],
+  });
+
+  // --- Real execution ---
+  const parentSpanId = body.parent_span_id;
+  const outcome = await executePlan(pipelineDeps, {
+    plan,
+    executionId: body.execution_id,
+    parentSpanId,
+  });
+
+  // Layers and spans are derived from the stages that actually ran.
+  const spans = outcome.stagesExecuted.map((stage) => ({
+    span_id: newSpanId(),
+    parent_span_id: parentSpanId,
+    name: stage.stage,
+    started_at: stage.startedAt,
+    completed_at: stage.completedAt,
+    duration_ms: stage.durationMs,
+    status: stage.status,
+  }));
+
+  let previousNodeId = 'contract-validation';
+  for (const stage of outcome.stagesExecuted) {
+    layers.push({
+      layerId: stage.stage,
+      layerType: STAGE_LAYER_TYPE[stage.stage],
+      startedAt: stage.startedAt,
+      completedAt: stage.completedAt,
+      durationMs: stage.durationMs,
+      status: stage.status,
+      details: stage.details,
+    });
+    graphNodes.push({
+      nodeId: stage.stage,
+      nodeType: 'step',
+      status: stage.status === 'success' ? 'completed' : 'failed',
+      startedAt: stage.startedAt,
+      completedAt: stage.completedAt,
+      parentNodes: [previousNodeId],
+      childNodes: [],
+    });
+    graphEdges.push({ from: previousNodeId, to: stage.stage, type: 'sequence' });
+    previousNodeId = stage.stage;
+  }
+
+  const layersExecuted = toLayersExecuted(outcome.stagesExecuted);
+  const proof = createExecutionProof(proofId, layers, graphNodes, graphEdges);
+
+  const responseBody = {
+    success: outcome.status === 'completed',
+    execution_id: outcome.executionId,
+    status: outcome.status,
+    started_at: outcome.startedAt,
+    completed_at: outcome.completedAt,
+    duration_ms: outcome.durationMs,
+    layers_executed: layersExecuted,
+    spans,
+    ...(outcome.error ? { error: outcome.error } : {}),
+    ...(outcome.engineResult
+      ? {
+          execution_metadata: {
+            resultId: outcome.engineResult.handle.executionId,
+            planId: outcome.engineResult.engineResult.executionId,
+            planVersion: '1.0.0',
+            startedAt: outcome.engineResult.engineResult.startedAt,
+            completedAt: outcome.engineResult.engineResult.completedAt,
+            durationMs: outcome.engineResult.engineResult.durationMs,
+            status: outcome.engineResult.engineResult.status,
+            executedBy: 'agentics-simulation-runner',
+            environment: {
+              hostname: 'agentics-runner',
+              version: '1.0.0',
+              region: process.env.CLOUD_RUN_REGION || 'local',
+            },
+          },
+        }
+      : {}),
+  };
+
+  sendJson(res, outcome.status === 'completed' ? 200 : 502, responseBody, proof);
+
+  // Fanout is reachable only when a plan actually executed (ADR-0001).
+  if (outcome.status !== 'completed') {
+    return;
+  }
+
+  const correlationId = req.headers['x-correlation-id'];
+  const fanoutCtx: FanoutContext = {
+    executionId: outcome.executionId,
+    timing: {
+      startedAt: outcome.startedAt,
+      completedAt: outcome.completedAt,
+      durationMs: outcome.durationMs,
+    },
+    layersExecuted,
+    proofHash: proof.proofId,
+    payload: responseBody,
+    artifacts: outcome.engineResult?.engineResult.artifacts,
+    parentSpanId,
+    correlationId: typeof correlationId === 'string' ? correlationId : undefined,
+  };
+  fireFanout(fanoutCtx).catch((error) => {
+    console.error(
+      `[fanout] failed for execution ${outcome.executionId} after ${Date.now() - requestStartTime}ms:`,
+      error
+    );
+  });
 }
 
 /**
@@ -382,7 +601,7 @@ async function handleRunner(req: IncomingMessage, res: ServerResponse, path: str
       // EXECUTION LAYER
       // ===================================================================
       const executionStartTime = Date.now();
-      const result = await gateway.submitPlanToEngine(body.plan as SimulationPlan, body.options as never);
+      const result = await gateway.submitPlanToEngine(body.plan as ExecutionPlan, body.options as never);
       layers.push(createLayerRecord(
         'execution',
         'execution',
@@ -466,7 +685,12 @@ async function handleRunner(req: IncomingMessage, res: ServerResponse, path: str
         artifacts: result.engineResult.artifacts,
         correlationId: typeof correlationId === 'string' ? correlationId : undefined,
       };
-      fireFanout(fanoutCtx).catch(() => {/* swallow — logged internally */});
+      fireFanout(fanoutCtx).catch((fanoutError) => {
+        console.error(
+          `[fanout] failed for execution ${result.handle.executionId}:`,
+          fanoutError
+        );
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       const errorTime = new Date().toISOString();
@@ -600,6 +824,7 @@ async function handleRunner(req: IncomingMessage, res: ServerResponse, path: str
         singleBoundary: true,
       },
       endpoints: [
+        'POST /v1/runner/plans - Submit a SimulationPlan for real execution',
         'POST /v1/runner/submit - Submit a simulation plan',
         'POST /v1/runner/execute - Execute via simulation engine',
         'GET /v1/runner/status/:id - Get execution status',
@@ -697,42 +922,21 @@ async function handleSimulationRunner(req: IncomingMessage, res: ServerResponse)
       return;
     }
 
-    // --- Execute / queue the simulation ---
-    const startedAt = new Date().toISOString();
-
-    // Attempt to submit via the execution gateway for tracking.
-    // If the gateway rejects (e.g. resource exhaustion), we still return
-    // a meaningful response rather than a 500.
-    let status: 'running' | 'completed' | 'failed' = 'running';
-    try {
-      // Fire-and-forget style: the gateway tracks the execution.
-      // For now we do a lightweight "queue" by recording the intent.
-      // Full engine-backed execution can be wired via gateway.submitPlanToEngine.
-      // This keeps latency low for the CLI caller.
-    } catch {
-      status = 'failed';
-    }
-
-    const responseBody = { simulationId, status, startedAt };
-    sendJson(res, 200, responseBody);
-
-    // Fire non-blocking fanout to core bundles on success
-    if (status !== 'failed') {
-      const correlationId = req.headers['x-correlation-id'];
-      const fanoutCtx: FanoutContext = {
-        executionId: simulationId!,
-        scenario: scenario!,
-        timing: {
-          startedAt: startedAt,
-          completedAt: new Date().toISOString(),
-          durationMs: Date.now() - Date.parse(startedAt),
-        },
-        layersExecuted: ['validation', 'scheduling', 'dispatch'],
-        payload: responseBody,
-        correlationId: typeof correlationId === 'string' ? correlationId : undefined,
-      };
-      fireFanout(fanoutCtx).catch(() => {/* swallow — logged internally */});
-    }
+    // --- Accepted, but not executed ---
+    // This payload carries no agents, no integrations and no execution graph,
+    // so there is nothing here the runner can execute. It is reported as such
+    // rather than as a running simulation, and it does not fan out to the
+    // Layer-3 cores. Submit a SimulationPlan to POST /v1/runner/plans for real
+    // execution (ADR-0001).
+    sendJson(res, 200, {
+      simulationId,
+      status: 'not_executed',
+      startedAt: new Date().toISOString(),
+      deprecated: true,
+      message:
+        'POST /v1/runner accepts the flat CLI payload but executes nothing. ' +
+        'Submit a SimulationPlan to POST /v1/runner/plans for real execution.',
+    });
   } catch (error) {
     if (error instanceof Error && error.message === 'Invalid JSON') {
       sendJson(res, 422, {
@@ -781,7 +985,13 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     return;
   }
 
-  // POST /v1/runner - simulation execution
+  // POST /v1/runner/plans - submit a SimulationPlan for real execution
+  if (path === '/v1/runner/plans' && req.method === 'POST') {
+    await handlePlanSubmission(req, res);
+    return;
+  }
+
+  // POST /v1/runner - deprecated flat CLI payload, executes nothing
   if (path === '/v1/runner' && req.method === 'POST') {
     await handleSimulationRunner(req, res);
     return;
@@ -797,25 +1007,35 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   sendJson(res, 404, { error: 'Not found', path });
 }
 
-// Create and start server
-const server = createServer((req, res) => {
-  handleRequest(req, res).catch((error) => {
-    console.error('Request error:', error);
-    sendJson(res, 500, { error: 'Internal server error' });
+/**
+ * Create a runner HTTP server without binding it to a port.
+ */
+export function createRunnerServer(): Server {
+  return createServer((req, res) => {
+    handleRequest(req, res).catch((error) => {
+      console.error('Request error:', error);
+      sendJson(res, 500, { error: 'Internal server error' });
+    });
   });
-});
+}
 
-// Graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('SIGTERM received, shutting down gracefully...');
-  server.close(() => {
-    console.log('Server closed');
-    process.exit(0);
+const isEntrypoint =
+  process.argv[1] !== undefined && pathToFileURL(process.argv[1]).href === import.meta.url;
+
+if (isEntrypoint) {
+  const server = createRunnerServer();
+
+  process.on('SIGTERM', () => {
+    console.log('SIGTERM received, shutting down gracefully...');
+    server.close(() => {
+      console.log('Server closed');
+      process.exit(0);
+    });
   });
-});
 
-server.listen(PORT, () => {
-  console.log(`agentics-runner server listening on port ${PORT}`);
-  console.log(`Contract enforcement enabled: ${contractValidator.getSchemaInfo().id}`);
-  console.log(`Endpoints available at /v1/runner`);
-});
+  server.listen(PORT, () => {
+    console.log(`agentics-runner server listening on port ${PORT}`);
+    console.log(`Contract enforcement enabled: ${contractValidator.getSchemaInfo().id}`);
+    console.log(`Endpoints available at /v1/runner`);
+  });
+}

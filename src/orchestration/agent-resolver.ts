@@ -21,17 +21,15 @@ import type {
   AgentInstance,
   AgentInstanceStatus,
   LLMClient,
-  LLMRequest,
-  LLMResponse,
 } from '../types/execution.js';
 import type {
   SimulationPlan,
   AgentDefinition,
   AgentType,
   LLMProvider,
-  LLMInvocationSpec,
 } from '../types/plan.js';
 import { StateRepository } from '../state/repository.js';
+import { ProviderLLMClientFactory } from './provider-llm-client-factory.js';
 
 // ============================================================================
 // Types
@@ -116,68 +114,6 @@ const DEFAULT_SUPPORTED_LLM_PROVIDERS: LLMProvider[] = [
 ];
 
 // ============================================================================
-// Mock LLM Client (for testing/development)
-// ============================================================================
-
-/**
- * Mock LLM client for testing purposes
- */
-class MockLLMClient implements LLMClient {
-  private readonly modelId: string;
-  private readonly provider: LLMProvider;
-  private isModelValid: boolean = true;
-
-  constructor(provider: LLMProvider, modelId: string) {
-    this.provider = provider;
-    this.modelId = modelId;
-  }
-
-  async validateModel(modelId: string): Promise<boolean> {
-    // In a real implementation, this would call the provider's API
-    // to verify the model exists and is accessible
-    return this.isModelValid;
-  }
-
-  async invoke(request: LLMRequest): Promise<LLMResponse> {
-    // Mock response for testing
-    const startTime = Date.now();
-
-    // Simulate some latency
-    await new Promise((resolve) => setTimeout(resolve, 10));
-
-    return {
-      content: `Mock response for prompt: ${request.prompt.substring(0, 50)}...`,
-      usage: {
-        inputTokens: Math.floor(request.prompt.length / 4),
-        outputTokens: 50,
-      },
-      finishReason: 'stop',
-      latencyMs: Date.now() - startTime,
-      modelId: request.model,
-    };
-  }
-
-  async close(): Promise<void> {
-    // Clean up resources
-  }
-
-  setModelValid(valid: boolean): void {
-    this.isModelValid = valid;
-  }
-}
-
-/**
- * Default LLM client factory that creates mock clients
- */
-class DefaultLLMClientFactory implements LLMClientFactory {
-  async createClient(provider: LLMProvider, config: LLMClientConfig): Promise<LLMClient> {
-    // In production, this would create real provider-specific clients
-    // (AnthropicClient, OpenAIClient, etc.)
-    return new MockLLMClient(provider, config.modelId);
-  }
-}
-
-// ============================================================================
 // Agent Resolver
 // ============================================================================
 
@@ -192,7 +128,7 @@ export class AgentResolver {
 
   constructor(config: AgentResolverConfig = {}) {
     this.config = config;
-    this.llmClientFactory = config.llmClientFactory ?? new DefaultLLMClientFactory();
+    this.llmClientFactory = config.llmClientFactory ?? new ProviderLLMClientFactory();
     this.supportedAgentTypes = new Set(
       config.supportedAgentTypes ?? DEFAULT_SUPPORTED_AGENT_TYPES
     );

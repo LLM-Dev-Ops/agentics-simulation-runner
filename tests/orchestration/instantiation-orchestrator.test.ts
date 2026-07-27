@@ -39,6 +39,7 @@ import {
   agentRequiresTools,
   getDefaultAgentConfig,
   AgentResolutionError,
+  type LLMClientFactory,
 } from '../../src/orchestration/agent-resolver.js';
 
 import {
@@ -48,12 +49,72 @@ import {
   getSupportedAdapterTypes,
   ConnectionEstablishmentError,
   createMockSecureVault,
+  type IntegrationAdapterFactory,
 } from '../../src/orchestration/connection-establisher.js';
+import type { ConnectionStatus } from '../../src/types/execution.js';
 
 import {
   InstantiationOrchestrator,
   createInstantiationOrchestrator,
 } from '../../src/orchestration/instantiation-orchestrator.js';
+
+// ============================================================================
+// Test Doubles
+//
+// ADR-0001 removed the implicit mock defaults from AgentResolver and
+// ConnectionEstablisher: both now build real provider clients / vault-backed
+// credentials and fail closed when unconfigured. Unit tests must therefore
+// inject their doubles explicitly.
+// ============================================================================
+
+function createStubLLMClientFactory(): LLMClientFactory {
+  return {
+    async createClient() {
+      return {
+        async validateModel() {
+          return true;
+        },
+        async invoke() {
+          return {
+            content: 'stub',
+            usage: { inputTokens: 1, outputTokens: 1 },
+            finishReason: 'stop',
+            latencyMs: 1,
+            modelId: 'stub-model',
+          };
+        },
+        async close() {
+          /* no-op */
+        },
+      };
+    },
+  };
+}
+
+function createStubAdapterFactory(): IntegrationAdapterFactory {
+  return {
+    async createAdapter() {
+      let connected = false;
+      let status: ConnectionStatus = 'DISCONNECTED';
+      return {
+        adapterType: 'HTTP_REST' as const,
+        async connect() {
+          connected = true;
+          status = 'CONNECTED';
+        },
+        async disconnect() {
+          connected = false;
+          status = 'DISCONNECTED';
+        },
+        async execute() {
+          return { statusCode: 200, body: {}, headers: {}, latencyMs: 1 };
+        },
+        isConnected: () => connected,
+        getStatus: () => status,
+      };
+    },
+  };
+}
 
 // ============================================================================
 // Test Fixtures
@@ -381,7 +442,7 @@ describe('Agent Resolver', () => {
   let resolver: AgentResolver;
 
   beforeEach(() => {
-    resolver = createAgentResolver();
+    resolver = createAgentResolver({ llmClientFactory: createStubLLMClientFactory() });
   });
 
   describe('resolveAgentInstances', () => {
@@ -503,7 +564,12 @@ describe('Connection Establisher', () => {
   let establisher: ConnectionEstablisher;
 
   beforeEach(() => {
-    establisher = createConnectionEstablisher();
+    establisher = createConnectionEstablisher({
+      secureVault: createMockSecureVault({
+        'test-api-key': { type: 'API_KEY', value: 'test-key-value' },
+      }),
+      adapterFactory: createStubAdapterFactory(),
+    });
   });
 
   describe('establishIntegrationConnections', () => {

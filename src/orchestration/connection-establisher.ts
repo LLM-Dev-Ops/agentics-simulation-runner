@@ -28,8 +28,9 @@ import type {
   SimulationPlan,
   IntegrationDefinition,
   AdapterType,
-  ConnectionSpec,
 } from '../types/plan.js';
+import { HttpAdapter } from '../core/adapters/http-adapter.js';
+import type { ResolvedCredentials } from '../core/adapters/base-adapter.js';
 import {
   executeWithRetry,
   createRetryContext,
@@ -125,35 +126,110 @@ export type ConnectionErrorCode =
   | 'ADAPTER_CREATION_FAILED';
 
 // ============================================================================
-// Mock Implementations (for testing/development)
+// Vault Implementations
 // ============================================================================
 
 /**
- * Mock secure vault for testing
+ * Error raised by a SecureVault when a credential cannot be produced.
  */
-class MockSecureVault implements SecureVault {
-  private readonly credentials: Map<string, Credential> = new Map();
+export class SecureVaultError extends Error {
+  constructor(
+    message: string,
+    public readonly code: ConnectionErrorCode
+  ) {
+    super(message);
+    this.name = 'SecureVaultError';
+  }
+}
 
-  constructor() {
-    // Add some default mock credentials
-    this.credentials.set('default-api-key', {
-      type: 'API_KEY',
-      value: 'mock-api-key-12345',
-    });
-    this.credentials.set('default-bearer-token', {
-      type: 'BEARER_TOKEN',
-      value: 'mock-bearer-token-67890',
-    });
+/**
+ * Thrown when vault configuration is missing at construction time.
+ */
+export class VaultConfigurationError extends Error {
+  readonly code = 'VAULT_NOT_CONFIGURED';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'VaultConfigurationError';
+  }
+}
+
+const CREDENTIAL_TYPE_BY_SUFFIX: Record<string, CredentialType> = {
+  API_KEY: 'API_KEY',
+  BEARER_TOKEN: 'BEARER_TOKEN',
+  BASIC_AUTH: 'BASIC_AUTH',
+  OAUTH2: 'OAUTH2',
+  CERTIFICATE: 'CERTIFICATE',
+};
+
+/**
+ * Resolves credentials from process environment variables.
+ *
+ * A credential reference `payments-api-key` with prefix `RUNNER_CREDENTIAL_`
+ * is read from `RUNNER_CREDENTIAL_PAYMENTS_API_KEY`. An optional
+ * `..._TYPE` companion variable selects the credential type
+ * (default `API_KEY`).
+ */
+export class EnvSecureVault implements SecureVault {
+  private readonly prefix: string;
+
+  constructor(prefix?: string) {
+    const effectivePrefix = prefix ?? process.env.RUNNER_CREDENTIAL_PREFIX;
+    if (!effectivePrefix) {
+      throw new VaultConfigurationError(
+        'No secure vault configured. Set RUNNER_CREDENTIAL_PREFIX (e.g. RUNNER_CREDENTIAL_) ' +
+          'or supply an explicit secureVault in ConnectionEstablisherConfig.'
+      );
+    }
+    this.prefix = effectivePrefix;
+  }
+
+  private envKey(credentialRef: string): string {
+    return `${this.prefix}${credentialRef.replace(/[^a-zA-Z0-9]+/g, '_').toUpperCase()}`;
+  }
+
+  async resolveCredential(credentialRef: string): Promise<Credential> {
+    const key = this.envKey(credentialRef);
+    const value = process.env[key];
+    if (!value) {
+      throw new SecureVaultError(
+        `Credential ${credentialRef} not found (expected environment variable ${key})`,
+        'CREDENTIAL_NOT_FOUND'
+      );
+    }
+
+    const declaredType = process.env[`${key}_TYPE`];
+    return {
+      type: declaredType ? CREDENTIAL_TYPE_BY_SUFFIX[declaredType] ?? 'API_KEY' : 'API_KEY',
+      value,
+    };
+  }
+
+  async isCredentialValid(credentialRef: string): Promise<boolean> {
+    return process.env[this.envKey(credentialRef)] !== undefined;
+  }
+}
+
+/**
+ * In-memory vault holding only credentials explicitly handed to it.
+ *
+ * Test-only: nothing under `src/` outside this module constructs it, and it
+ * seeds no credentials of its own. Unknown references fail closed.
+ */
+export class InMemorySecureVault implements SecureVault {
+  private readonly credentials: Map<string, Credential>;
+
+  constructor(seed: Record<string, Credential> = {}) {
+    this.credentials = new Map(Object.entries(seed));
   }
 
   async resolveCredential(credentialRef: string): Promise<Credential> {
     const credential = this.credentials.get(credentialRef);
     if (!credential) {
-      // Return a mock credential for any reference in testing
-      return {
-        type: 'API_KEY',
-        value: `mock-resolved-${credentialRef}`,
-      };
+      throw new SecureVaultError(
+        `Credential ${credentialRef} not found`,
+        'CREDENTIAL_NOT_FOUND'
+      );
     }
     return credential;
   }
@@ -161,7 +237,7 @@ class MockSecureVault implements SecureVault {
   async isCredentialValid(credentialRef: string): Promise<boolean> {
     const credential = this.credentials.get(credentialRef);
     if (!credential) {
-      return true; // Assume valid in mock mode
+      return false;
     }
     if (credential.expiresAt && credential.expiresAt < new Date()) {
       return false;
@@ -174,64 +250,95 @@ class MockSecureVault implements SecureVault {
   }
 }
 
-/**
- * Mock integration adapter for testing
- */
-class MockIntegrationAdapter implements IntegrationAdapter {
-  readonly adapterType: AdapterType;
-  private connected: boolean = false;
-  private status: ConnectionStatus = 'DISCONNECTED';
-  private readonly connectionSpec: ConnectionSpec;
-  private readonly credential: Credential;
+// ============================================================================
+// Real Integration Adapters
+// ============================================================================
 
-  constructor(
-    definition: IntegrationDefinition,
-    credential: Credential
-  ) {
-    this.adapterType = definition.adapterType;
-    this.connectionSpec = definition.connectionSpec;
+const ADAPTER_CREDENTIAL_TYPE: Record<CredentialType, ResolvedCredentials['type']> = {
+  API_KEY: 'api_key',
+  BEARER_TOKEN: 'bearer',
+  BASIC_AUTH: 'basic',
+  OAUTH2: 'oauth2',
+  CERTIFICATE: 'mtls',
+};
+
+/**
+ * Adapts the real {@link HttpAdapter} onto the orchestration
+ * {@link IntegrationAdapter} contract.
+ */
+export class HttpIntegrationAdapter implements IntegrationAdapter {
+  readonly adapterType: AdapterType = 'HTTP_REST';
+  private readonly adapter: HttpAdapter;
+  private readonly integrationId: string;
+  private readonly credential: Credential;
+  private status: ConnectionStatus = 'DISCONNECTED';
+
+  constructor(definition: IntegrationDefinition, credential: Credential) {
+    const baseUrl = definition.connectionSpec.baseUrl;
+    if (!baseUrl) {
+      throw new ConnectionEstablishmentError(
+        `Integration ${definition.integrationId} has no baseUrl in its connectionSpec`,
+        'ADAPTER_CREATION_FAILED',
+        definition.integrationId
+      );
+    }
+
+    this.integrationId = definition.integrationId;
     this.credential = credential;
+    this.adapter = new HttpAdapter(definition.integrationId as IntegrationId, {
+      baseUrl,
+      connectionTimeoutMs: definition.connectionSpec.timeout,
+      requestTimeoutMs: definition.connectionSpec.timeout,
+    });
   }
 
   async connect(): Promise<void> {
     this.status = 'CONNECTING';
-
-    // Simulate connection delay
-    await new Promise((resolve) => setTimeout(resolve, 10));
-
-    // Mock connection success
-    this.connected = true;
-    this.status = 'CONNECTED';
+    try {
+      await this.adapter.connect({
+        type: ADAPTER_CREDENTIAL_TYPE[this.credential.type],
+        value: this.credential.value,
+      });
+      this.status = 'CONNECTED';
+    } catch (error) {
+      this.status = 'ERROR';
+      throw error;
+    }
   }
 
   async disconnect(): Promise<void> {
-    this.connected = false;
+    await this.adapter.close();
     this.status = 'DISCONNECTED';
   }
 
   async execute(request: IntegrationRequest): Promise<IntegrationResponse> {
-    if (!this.connected) {
-      throw new Error('Not connected');
+    const result = await this.adapter.execute({
+      integrationId: this.integrationId,
+      operation: request.method,
+      path: request.path,
+      parameters: request.parameters,
+      body: request.body,
+      headers: request.headers,
+      idempotencyKey: request.idempotencyKey,
+      timeoutMs: request.timeout,
+    });
+
+    if (!result.success) {
+      throw new Error(
+        `Integration ${this.integrationId} call failed: ${result.error?.message ?? 'unknown error'}`
+      );
     }
 
-    const startTime = Date.now();
-
-    // Simulate request processing
-    await new Promise((resolve) => setTimeout(resolve, 5));
-
     return {
-      statusCode: 200,
-      body: {
-        success: true,
-        data: { method: request.method, path: request.path },
-      },
-      headers: { 'content-type': 'application/json' },
-      latencyMs: Date.now() - startTime,
+      statusCode: result.metrics.statusCode ?? 200,
+      body: result.output,
+      headers: result.responseHeaders ?? {},
+      latencyMs: result.metrics.latencyMs,
     };
   }
 
   isConnected(): boolean {
-    return this.connected;
+    return this.adapter.isConnected();
   }
 
   getStatus(): ConnectionStatus {
@@ -240,16 +347,22 @@ class MockIntegrationAdapter implements IntegrationAdapter {
 }
 
 /**
- * Default adapter factory that creates mock adapters
+ * Builds real adapters. Adapter types without a concrete implementation are
+ * rejected rather than silently mocked.
  */
-class DefaultAdapterFactory implements IntegrationAdapterFactory {
+export class RealAdapterFactory implements IntegrationAdapterFactory {
   async createAdapter(
     definition: IntegrationDefinition,
     credential: Credential
   ): Promise<IntegrationAdapter> {
-    // In production, this would create real adapter implementations
-    // based on the adapter type (HttpAdapter, GrpcAdapter, etc.)
-    return new MockIntegrationAdapter(definition, credential);
+    if (definition.adapterType !== 'HTTP_REST') {
+      throw new ConnectionEstablishmentError(
+        `No adapter implementation for type ${definition.adapterType}`,
+        'UNSUPPORTED_ADAPTER_TYPE',
+        definition.integrationId
+      );
+    }
+    return new HttpIntegrationAdapter(definition, credential);
   }
 }
 
@@ -308,8 +421,8 @@ export class ConnectionEstablisher {
 
   constructor(config: ConnectionEstablisherConfig = {}) {
     this.config = config;
-    this.secureVault = config.secureVault ?? new MockSecureVault();
-    this.adapterFactory = config.adapterFactory ?? new DefaultAdapterFactory();
+    this.secureVault = config.secureVault ?? new EnvSecureVault();
+    this.adapterFactory = config.adapterFactory ?? new RealAdapterFactory();
     this.connectionTimeout = config.connectionTimeout ?? 30000;
   }
 
@@ -392,23 +505,25 @@ export class ConnectionEstablisher {
     const isValid = await this.secureVault.isCredentialValid(credentialRef);
     if (!isValid) {
       throw new ConnectionEstablishmentError(
-        `Credential ${credentialRef} is expired or invalid`,
+        `Credential ${credentialRef} is missing, expired or invalid`,
         'CREDENTIAL_EXPIRED',
         integration.integrationId
       );
     }
 
     // Resolve the credential
-    const credential = await this.secureVault.resolveCredential(credentialRef);
-    if (!credential) {
-      throw new ConnectionEstablishmentError(
-        `Credential ${credentialRef} not found`,
-        'CREDENTIAL_NOT_FOUND',
-        integration.integrationId
-      );
+    try {
+      return await this.secureVault.resolveCredential(credentialRef);
+    } catch (error) {
+      if (error instanceof SecureVaultError) {
+        throw new ConnectionEstablishmentError(
+          error.message,
+          error.code,
+          integration.integrationId
+        );
+      }
+      throw error;
     }
-
-    return credential;
   }
 
   /**
@@ -573,10 +688,15 @@ export function createConnectionEstablisher(
 }
 
 /**
- * Creates a mock SecureVault for testing
+ * Creates an in-memory SecureVault seeded with the given credentials.
+ *
+ * TEST-ONLY. It is never a production default — the default vault is
+ * {@link EnvSecureVault}, which fails closed when unconfigured.
  */
-export function createMockSecureVault(): SecureVault {
-  return new MockSecureVault();
+export function createMockSecureVault(
+  seed: Record<string, Credential> = {}
+): SecureVault {
+  return new InMemorySecureVault(seed);
 }
 
 /**

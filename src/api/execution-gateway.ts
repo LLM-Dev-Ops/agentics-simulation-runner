@@ -31,6 +31,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { createHash } from 'crypto';
 
 import type { SimulationPlan } from '../types/simulation-plan.js';
+import type { SimulationPlan as ExecutionPlan } from '../types/plan.js';
 import type { SimulationResult } from '../types/simulation-result.js';
 import {
   SimulationEngineInvoker,
@@ -354,7 +355,7 @@ export interface ExecutionGateway {
    * @throws EngineInvocationError if execution fails
    */
   submitPlanToEngine(
-    plan: SimulationPlan,
+    plan: ExecutionPlan,
     options?: EngineExecutionOptions
   ): Promise<EngineExecutionCompleteResult>;
 
@@ -598,7 +599,7 @@ export class ExecutionGatewayImpl implements ExecutionGateway {
    * capturing deterministic outputs, timelines, and artifacts.
    */
   async submitPlanToEngine(
-    plan: SimulationPlan,
+    plan: ExecutionPlan,
     options?: EngineExecutionOptions
   ): Promise<EngineExecutionCompleteResult> {
     // Validate plan integrity - verify hash before proceeding
@@ -633,7 +634,7 @@ export class ExecutionGatewayImpl implements ExecutionGateway {
       planId: plan.planId,
       planHash: plan.planHash,
       tenantId,
-      estimatedDuration: plan.executionConfig.timeoutSeconds * 1000,
+      estimatedDuration: plan.executionConfig.maxDuration,
     });
 
     // Track execution
@@ -641,8 +642,8 @@ export class ExecutionGatewayImpl implements ExecutionGateway {
       handle,
       startTime: new Date(),
       stateNamespace: this.generateStateNamespace(executionId),
-      isolationLevel: plan.stateConfig.isolationLevel,
-      maxDuration: plan.executionConfig.timeoutSeconds * 1000,
+      isolationLevel: plan.executionConfig.isolationLevel,
+      maxDuration: plan.executionConfig.maxDuration,
       status: 'running',
       abortRequested: false,
     };
@@ -651,7 +652,12 @@ export class ExecutionGatewayImpl implements ExecutionGateway {
 
     try {
       // Invoke the simulation engine
-      const engineResult = await this.engineInvoker.invoke(plan, options?.seed);
+      // The invoker's parameter is typed against the wire plan while its body
+      // reads the execution plan; the two diverged before this change.
+      const engineResult = await this.engineInvoker.invoke(
+        plan as unknown as SimulationPlan,
+        options?.seed
+      );
 
       // Convert engine result to the format expected by the emitter
       const engineExecutionResult = this.convertToEngineExecutionResult(engineResult);
@@ -1029,9 +1035,11 @@ export class ExecutionGatewayImpl implements ExecutionGateway {
   /**
    * Extract tenant ID from plan or generate default
    */
-  private extractTenantId(plan: SimulationPlan): string {
+  private extractTenantId(plan: SimulationPlan | ExecutionPlan): string {
     // Extract from plan metadata if available
-    const metadata = plan.metadata as unknown as Record<string, unknown> | undefined;
+    const metadata = (plan as { metadata?: unknown }).metadata as
+      | Record<string, unknown>
+      | undefined;
     const tenantId = metadata?.tenantId;
     return typeof tenantId === 'string' ? tenantId : uuidv4();
   }
@@ -1070,7 +1078,7 @@ export class ExecutionGatewayImpl implements ExecutionGateway {
   /**
    * Get plan object without hash for hash computation
    */
-  private getPlanWithoutHash(plan: SimulationPlan): Omit<SimulationPlan, 'planHash'> {
+  private getPlanWithoutHash<T extends { planHash: SHA256Hash }>(plan: T): Omit<T, 'planHash'> {
     const { planHash, ...planWithoutHash } = plan;
     return planWithoutHash;
   }
